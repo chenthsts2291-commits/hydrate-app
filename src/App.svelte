@@ -2,7 +2,7 @@
   import { onMount } from 'svelte';
   import { calculateTernaryEnergySurface, inter } from './vdwp_core.js';
 
-  // 初期値
+  // --- 初期設定 ---
   let temp = 273.15;
   let press = 50.0;
   
@@ -19,7 +19,7 @@
   async function draw() {
     if (!Plotly) return;
 
-    // 計算実行 (offset引数は削除済み)
+    // 計算実行
     const res = calculateTernaryEnergySurface(gas_a, gas_b, gas_c, press, temp, 60);
 
     // --- 最大値の探索とモル分率計算 ---
@@ -64,7 +64,7 @@
       contour: { show: false } 
     };
 
-    // 2. Surface (線担当)
+    // 2. Surface (等高線担当)
     const contourTrace = {
       type: 'surface',
       x: res.matrix.x, y: res.matrix.y, z: res.matrix.z,
@@ -83,7 +83,6 @@
           width: 5,
           start: 0,
           end: 0,
-          // size指定は削除（自動の方が安全）
         },
         x: { show: false },
         y: { show: false }
@@ -91,7 +90,7 @@
       hoverinfo: 'skip'
     };
 
-    // 3. 基準面
+    // 3. 基準面 (三角形)
     const zeroPlane = {
       type: 'mesh3d',
       x: [0, 1, 0.5], y: [0, 0, 0.866], z: [0, 0, 0],
@@ -128,12 +127,21 @@
 
 <main>
   <h1>3成分系ハイドレートシミュレータ ver.1.1.0</h1>
-  <h1>Okayama University Naito Hisatoshi</h1>
+
   <div class="controls">
     <div class="row">
-      <label class="gas-label"> <span class="mark a">A</span> <select bind:value={gas_a} on:change={draw}> {#each available_gases as g}<option>{g}</option>{/each} </select> </label>
-      <label class="gas-label"> <span class="mark b">B</span> <select bind:value={gas_b} on:change={draw}> {#each available_gases as g}<option>{g}</option>{/each} </select> </label>
-      <label class="gas-label"> <span class="mark c">C</span> <select bind:value={gas_c} on:change={draw}> {#each available_gases as g}<option>{g}</option>{/each} </select> </label>
+      <div class="gas-box">
+        <label> <span class="mark bg-a">A</span> Gas A </label>
+        <select bind:value={gas_a} on:change={draw}> {#each available_gases as g}<option>{g}</option>{/each} </select>
+      </div>
+      <div class="gas-box">
+        <label> <span class="mark bg-b">B</span> Gas B </label>
+        <select bind:value={gas_b} on:change={draw}> {#each available_gases as g}<option>{g}</option>{/each} </select>
+      </div>
+      <div class="gas-box">
+        <label> <span class="mark bg-c">C</span> Gas C </label>
+        <select bind:value={gas_c} on:change={draw}> {#each available_gases as g}<option>{g}</option>{/each} </select>
+      </div>
     </div>
     
     <hr>
@@ -160,28 +168,50 @@
         <span style="color: #00b894;">C: {(maxInfo.c * 100).toFixed(1)}%</span>
       </div>
     </div>
-
   </div>
+
   <div id="myDiv"></div>
+
+  <footer>
+    <p>Okayama University | Naito Hisatoshi</p>
+  </footer>
 </main>
 
 <style>
-  main { max-width: 900px; margin: 0 auto; padding: 20px; font-family: sans-serif; }
-  h1 { text-align: center; color: #333; }
-  .controls { background: #f8f9fa; padding: 20px; border-radius: 12px; box-shadow: 0 4px 6px rgba(0,0,0,0.1); margin-bottom: 20px; }
-  .row { display: flex; gap: 15px; justify-content: space-between; margin-bottom: 10px;}
-  label { display: flex; flex-direction: column; font-weight: bold; width: 100%; }
-  select { margin-top: 8px; padding: 8px; border-radius: 4px; border: 1px solid #ccc; }
-  .mark { padding: 2px 8px; border-radius: 4px; color: white; display: inline-block; width: fit-content;}
-  .mark.a { background-color: #d63031; } .mark.b { background-color: #0984e3; } .mark.c { background-color: #00b894; } 
-  hr { border: 0; border-top: 1px solid #ddd; margin: 20px 0; }
-  .sliders-container { display: grid; grid-template-columns: 1fr 1fr; gap: 30px; }
-  .control-group { display: flex; flex-direction: column; gap: 5px; }
-  .label-row { display: flex; justify-content: space-between; align-items: center; font-weight: bold; color: #444; }
-  .number-input { width: 80px; padding: 4px; border: 1px solid #aaa; border-radius: 4px; text-align: right; font-size: 1rem; }
-  input[type=range] { width: 100%; cursor: pointer; }
+  main { max-width: 900px; margin: 0 auto; padding: 20px; font-family: 'Helvetica Neue', Arial, sans-serif; color: #333; }
+  h1 { text-align: center; margin-bottom: 30px; font-size: 1.8rem; color: #2c3e50; }
   
-  .info-box { background: white; margin-top: 20px; padding: 15px; border-radius: 8px; border-left: 5px solid #6c5ce7; box-shadow: 0 2px 4px rgba(0,0,0,0.05); }
-  .info-box h3 { margin: 0 0 10px 0; font-size: 1.1rem; color: #333; }
-  .info-composition { display: flex; gap: 20px; margin-top: 5px; font-weight: bold; }
+  /* コントロールパネル全体 */
+  .controls { background: #fff; padding: 25px; border-radius: 12px; box-shadow: 0 4px 15px rgba(0,0,0,0.08); margin-bottom: 30px; border: 1px solid #eee; }
+  
+  /* ガス選択部分 */
+  .row { display: flex; gap: 20px; justify-content: space-between; flex-wrap: wrap; }
+  .gas-box { flex: 1; min-width: 200px; display: flex; flex-direction: column; }
+  label { font-weight: bold; font-size: 0.9rem; margin-bottom: 5px; display: flex; align-items: center; gap: 8px; }
+  select { padding: 10px; border-radius: 6px; border: 1px solid #ddd; background: #fafafa; font-size: 1rem; cursor: pointer; }
+  
+  .mark { padding: 4px 10px; border-radius: 4px; color: white; font-size: 0.8rem; font-weight: bold; }
+  .bg-a { background-color: #d63031; } 
+  .bg-b { background-color: #0984e3; } 
+  .bg-c { background-color: #00b894; } 
+  
+  hr { border: 0; border-top: 1px solid #eee; margin: 25px 0; }
+  
+  /* スライダー部分 */
+  .sliders-container { display: grid; grid-template-columns: 1fr 1fr; gap: 40px; margin-bottom: 20px; }
+  .control-group { display: flex; flex-direction: column; gap: 10px; }
+  .label-row { display: flex; justify-content: space-between; align-items: center; font-weight: bold; color: #555; font-size: 0.95rem; }
+  .number-input { width: 80px; padding: 6px; border: 1px solid #ccc; border-radius: 4px; text-align: right; font-size: 1rem; }
+  input[type=range] { width: 100%; cursor: pointer; height: 6px; background: #ddd; border-radius: 5px; outline: none; -webkit-appearance: none; }
+  
+  /* 分析情報ボックス */
+  .info-box { background: #f8f9fa; padding: 15px 20px; border-radius: 8px; border-left: 5px solid #6c5ce7; }
+  .info-box h3 { margin: 0 0 10px 0; font-size: 1rem; color: #555; text-transform: uppercase; letter-spacing: 0.5px; }
+  .info-composition { display: flex; gap: 20px; margin-top: 5px; font-weight: bold; font-size: 1.1rem; }
+
+  /* グラフエリア */
+  #myDiv { border-radius: 8px; overflow: hidden; border: 1px solid #eee; }
+
+  /* フッター */
+  footer { margin-top: 40px; text-align: right; color: #aaa; font-size: 0.9rem; border-top: 1px solid #eee; padding-top: 10px; }
 </style>
