@@ -127,8 +127,8 @@
 </script>
 
 <main>
-  <h1>3成分系ハイドレートシミュレータ</h1>
-  
+  <h1>3成分系ハイドレートシミュレータ ver.1.1.0</h1>
+  <h1>Okayama University Naito Hisatoshi</h1>
   <div class="controls">
     <div class="row">
       <label class="gas-label"> <span class="mark a">A</span> <select bind:value={gas_a} on:change={draw}> {#each available_gases as g}<option>{g}</option>{/each} </select> </label>
