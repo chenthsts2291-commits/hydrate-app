@@ -79,7 +79,7 @@
       colorbar: { 
         title: '<b>構造</b>',
         tickvals: [-maxAbs/2, maxAbs/2],
-        ticktext: ['sI (ティール)', 'sII (オレンジ)']
+        ticktext: ['sI安定', 'sII安定']
       },
       hovertemplate: 'ΔμsI - ΔμsII: %{z:.3f} kJ/mol<extra></extra>',
       contour: { show: false } 
@@ -127,7 +127,8 @@
       uirevision: 'true', // カメラ固定（スライダーを動かしても視点がリセットされない）
       scene: {
         aspectratio: {x: 1, y: 0.866, z: 0.6},
-        zaxis: { title: '<b>ΔμsI - ΔμsII [kJ/mol]</b>' }, // 縦軸の名前を変更
+        // ★ zaxis の指定方法を Plotly の最新仕様に修正
+        zaxis: { title: { text: '<b>ΔμsI - ΔμsII [kJ/mol]</b>' } },
         xaxis: {visible: false}, yaxis: {visible: false},
         annotations: [
           { x: 0, y: 0, z: maxZ_plot, text: `A: ${gas_a}`, showarrow:false, font:{size:14, color:'black'}, bgcolor:'rgba(255,255,255,0.8)' },
@@ -150,7 +151,7 @@
 </script>
 
 <main>
-  <h1>3成分系ハイドレートシミュレータ ver.1.1.1</h1>
+  <h1>3成分系ハイドレートシミュレータ ver.1.1.2</h1>
 
   <div class="controls">
     <div class="row">
@@ -226,7 +227,8 @@
   input[type=range] { width: 100%; cursor: pointer; height: 6px; background: #ddd; border-radius: 5px; outline: none; -webkit-appearance: none; }
   
   .info-box { background: #f8f9fa; padding: 15px 20px; border-radius: 8px; border-left: 5px solid #6c5ce7; }
-  .info-box h3 { margin: 0 0 10px 0; font-size: 1rem; color: #555; text-transform: uppercase; letter-spacing: 0.5px; }
+  /* ★ 大文字変換 (text-transform: uppercase;) を削除して μ が M になるバグを修正 */
+  .info-box h3 { margin: 0 0 10px 0; font-size: 1rem; color: #555; letter-spacing: 0.5px; }
   .info-composition { display: flex; gap: 20px; margin-top: 5px; font-weight: bold; font-size: 1.1rem; }
 
   #myDiv { border-radius: 8px; overflow: hidden; border: 1px solid #eee; }
