@@ -21,13 +21,14 @@
   let isSearching = false;
   let searchResults = [];
 
-  let s_gas_a = "Methane", s_gas_b = "Ethane", s_gas_c = "CF4";
+  // ★ 修正3: モーダル初期値をメイン画面と被らないものに設定
+  let s_gas_a = "Ne", s_gas_b = "Ar", s_gas_c = "Kr";
   let s_temp = 273.15, s_press = 50.0;
 
   const EPSILON = 0.005;
 
   // ==========================================
-  // ★ 精度向上: 2成分系の最大値・最小値（組成も返すように改良）
+  // ★ 2成分系の最大値・最小値（オブジェクト返し）
   // ==========================================
   function getBinaryMaxObj(name1, name2, P, T, steps = 500) {
     let maxVal = -Infinity;
@@ -52,7 +53,7 @@
   }
 
   // ==========================================
-  // ★ 検索ロジック
+  // ★ 検索ロジック (超高精度版)
   // ==========================================
   async function runAdvancedSearch() {
     isSearching = true;
@@ -68,19 +69,20 @@
         for (let j = i + 1; j < N; j++) {
            const g1 = available_gases[i], g2 = available_gases[j];
            const key = [g1, g2].sort().join('-');
-           binMaxCache[key] = getBinaryMaxObj(g1, g2, s_press, s_temp, 50).val;
-           binMinCache[key] = getBinaryMinObj(g1, g2, s_press, s_temp, 50).val;
+           // ★ 修正2: 検索時の2成分キャッシュも解像度UP (30 -> 100)
+           binMaxCache[key] = getBinaryMaxObj(g1, g2, s_press, s_temp, 100).val;
+           binMinCache[key] = getBinaryMinObj(g1, g2, s_press, s_temp, 100).val;
         }
       }
     }
 
     const getCachedMaxVal = (g1, g2, p, t) => {
       if (searchMode === 'pt') return binMaxCache[[g1, g2].sort().join('-')];
-      return getBinaryMaxObj(g1, g2, p, t, 50).val;
+      return getBinaryMaxObj(g1, g2, p, t, 100).val;
     };
     const getCachedMinVal = (g1, g2, p, t) => {
       if (searchMode === 'pt') return binMinCache[[g1, g2].sort().join('-')];
-      return getBinaryMinObj(g1, g2, p, t, 50).val;
+      return getBinaryMinObj(g1, g2, p, t, 100).val;
     };
 
     if (searchMode === 'gases') {
@@ -104,7 +106,8 @@
       const mBinMax = Math.max(getCachedMaxVal(g1, g2, p, t), getCachedMaxVal(g2, g3, p, t), getCachedMaxVal(g1, g3, p, t));
       const mBinMin = Math.min(getCachedMinVal(g1, g2, p, t), getCachedMinVal(g2, g3, p, t), getCachedMinVal(g1, g3, p, t));
 
-      const res = calculateTernaryEnergySurface(g1, g2, g3, p, t, 20); // アタリ付けもn=20に精度UP
+      // ★ 修正2: 粗いスキャンの解像度をUP (15 -> 50)
+      const res = calculateTernaryEnergySurface(g1, g2, g3, p, t, 50); 
       
       let locMax = { val: -Infinity, idx: -1 };
       let locMin = { val: Infinity, idx: -1 };
@@ -130,13 +133,14 @@
       const maxC = calcComp(locMax.idx, res);
       const minC = calcComp(locMin.idx, res);
 
-      if (maxC.a > EPSILON && maxC.b > EPSILON && maxC.c > EPSILON && locMax.val > mBinMax + 0.001) {
+      // ★ 修正2: 閾値を緩和 (0.001 -> 0.0001)
+      if (maxC.a > EPSILON && maxC.b > EPSILON && maxC.c > EPSILON && locMax.val > mBinMax + 0.0001) {
         roughSynergy = true; synergyType = "sII優位";
-      } else if (minC.a > EPSILON && minC.b > EPSILON && minC.c > EPSILON && locMin.val < mBinMin - 0.001) {
+      } else if (minC.a > EPSILON && minC.b > EPSILON && minC.c > EPSILON && locMin.val < mBinMin - 0.0001) {
         roughSynergy = true; synergyType = "sI優位";
       }
 
-      // ★ 確定診断 (n=100の超高精度で最終確認)
+      // 確定診断 (n=100)
       if (roughSynergy) {
         const fineRes = calculateTernaryEnergySurface(g1, g2, g3, p, t, 100);
         let fMax = -Infinity, fMin = Infinity, fMaxIdx = -1, fMinIdx = -1;
@@ -153,13 +157,14 @@
         let compStr = "";
         if (synergyType === "sII優位") {
           const fC = calcComp(fMaxIdx, fineRes);
-          if (fC.a > EPSILON && fC.b > EPSILON && fC.c > EPSILON && fMax > exactBinMax + 0.0005) {
+          // ★ 修正2: 確定閾値を緩和 (0.0005 -> 0.0001)
+          if (fC.a > EPSILON && fC.b > EPSILON && fC.c > EPSILON && fMax > exactBinMax + 0.0001) {
             compStr = `${g1}:${(fC.a*100).toFixed(1)}%  ${g2}:${(fC.b*100).toFixed(1)}%  ${g3}:${(fC.c*100).toFixed(1)}%`;
             searchResults.push({ temp: t, press: p, gases: [g1, g2, g3], type: synergyType, comp: compStr });
           }
         } else {
           const fC = calcComp(fMinIdx, fineRes);
-          if (fC.a > EPSILON && fC.b > EPSILON && fC.c > EPSILON && fMin < exactBinMin - 0.0005) {
+          if (fC.a > EPSILON && fC.b > EPSILON && fC.c > EPSILON && fMin < exactBinMin - 0.0001) {
             compStr = `${g1}:${(fC.a*100).toFixed(1)}%  ${g2}:${(fC.b*100).toFixed(1)}%  ${g3}:${(fC.c*100).toFixed(1)}%`;
             searchResults.push({ temp: t, press: p, gases: [g1, g2, g3], type: synergyType, comp: compStr });
           }
@@ -181,12 +186,11 @@
   }
 
   // ==========================================
-  // ★ メイン描画ロジック (矛盾完全排除版)
+  // ★ メイン描画ロジック
   // ==========================================
   async function draw() {
     if (!Plotly) return;
 
-    // 計算解像度を n=100 (約5000点) に引き上げ
     const res = calculateTernaryEnergySurface(gas_a, gas_b, gas_c, press, temp, 100);
 
     let maxZ = -Infinity;
@@ -202,7 +206,6 @@
       }
     }
 
-    // ★ 500分割の超高精度で2成分エッジの限界値を計算
     const binAB_max = getBinaryMaxObj(gas_a, gas_b, press, temp, 500);
     const binBC_max = getBinaryMaxObj(gas_b, gas_c, press, temp, 500);
     const binCA_max = getBinaryMaxObj(gas_c, gas_a, press, temp, 500);
@@ -220,18 +223,17 @@
     const maxAbs = Math.max(Math.abs(maxZ), Math.abs(minZ), 0.1); 
     const discreteColorscale = [ [0.0, '#008080'], [0.5, '#008080'], [0.5, '#FF8C00'], [1.0, '#FF8C00'] ];
 
-    // --- 最大値 (sII) の確定ロジック ---
     if (maxIdx !== -1) {
       const px = res.flat.x[maxIdx]; const py = res.flat.y[maxIdx];
       const c = py / 0.866025; const b = px - 0.5 * c; const a = 1.0 - b - c;
       const compA = Math.max(0, a); const compB = Math.max(0, b); const compC = Math.max(0, c);
       
-      const hasSynergyMax = compA > EPSILON && compB > EPSILON && compC > EPSILON && (maxZ > bestBinMax.val + 0.0005);
+      // ★ 修正2: メイン描画の判定閾値も 0.0001 に緩和
+      const hasSynergyMax = compA > EPSILON && compB > EPSILON && compC > EPSILON && (maxZ > bestBinMax.val + 0.0001);
 
       if (hasSynergyMax) {
         analysisMax = { val: maxZ, a: compA, b: compB, c: compC, hasSynergy: true };
       } else {
-        // ★ 矛盾排除: シナジーがないなら、ズレた3成分座標を捨てて「真の2成分エッジ座標」で上書き！
         let ba = 0, bb = 0, bc = 0;
         if (bestBinMax === binAB_max) { ba = bestBinMax.f1; bb = bestBinMax.f2; }
         else if (bestBinMax === binBC_max) { bb = bestBinMax.f1; bc = bestBinMax.f2; }
@@ -240,18 +242,17 @@
       }
     }
 
-    // --- 最小値 (sI) の確定ロジック ---
     if (minIdx !== -1) {
       const px = res.flat.x[minIdx]; const py = res.flat.y[minIdx];
       const c = py / 0.866025; const b = px - 0.5 * c; const a = 1.0 - b - c;
       const compA = Math.max(0, a); const compB = Math.max(0, b); const compC = Math.max(0, c);
 
-      const hasSynergyMin = compA > EPSILON && compB > EPSILON && compC > EPSILON && (minZ < bestBinMin.val - 0.0005);
+      // ★ 修正2: メイン描画の判定閾値も 0.0001 に緩和
+      const hasSynergyMin = compA > EPSILON && compB > EPSILON && compC > EPSILON && (minZ < bestBinMin.val - 0.0001);
 
       if (hasSynergyMin) {
         analysisMin = { val: minZ, a: compA, b: compB, c: compC, hasSynergy: true };
       } else {
-        // ★ 矛盾排除: シナジーがないなら、ズレた3成分座標を捨てて「真の2成分エッジ座標」で上書き！
         let ba = 0, bb = 0, bc = 0;
         if (bestBinMin === binAB_min) { ba = bestBinMin.f1; bb = bestBinMin.f2; }
         else if (bestBinMin === binBC_min) { bb = bestBinMin.f1; bc = bestBinMin.f2; }
@@ -303,7 +304,7 @@
 </script>
 
 <main>
-  <h1>3成分系ハイドレート探索AI ver.2.3.0</h1>
+  <h1>3成分系ハイドレート探索AI ver.3.0.0 (超高精度版)</h1>
 
   <div class="action-row" style="margin-bottom: 25px;">
     <button class="discover-btn" on:click={() => { showSearchModal = true; searchResults = []; }}>
@@ -436,7 +437,7 @@
 
       <div class="search-results">
         {#if isSearching}
-          <div class="loading-text">計算しています。数秒お待ちください...</div>
+          <div class="loading-text">計算しています。数十秒かかる場合があります...</div>
         {:else if searchResults.length > 0}
           <h4>🎯 発見された完全な3成分シナジー条件 ({searchResults.length} 件)</h4>
           <ul class="result-list">

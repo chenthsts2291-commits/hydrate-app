@@ -94,7 +94,7 @@ function cellPotential_LJD(r, sigma, epsilon, z, R) {
 function calculateLangmuir_LJD(temp, R, z, sigma, epsK) {
     const beta = 1.0 / (NkB * temp);
     const epsilon = epsK * NkB; 
-    const points = 100;
+    const points = 500; // ★ 100 から 500 に変更（積分精度5倍）
     const step = R / (points - 1);
     let integral_sum = 0.0;
     for (let i = 1; i < points; i++) {
