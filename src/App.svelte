@@ -11,7 +11,6 @@
   let gas_b = "Ethane";
   let gas_c = "CF4";
 
-  // ★ 最小値(sI)の変数を削除し、最大値(sII)のみに限定
   let analysisMax = { val: 0, a: 0, b: 0, c: 0, hasSynergy: false };
   
   let Plotly;
@@ -19,6 +18,7 @@
   let showSearchModal = false;
   let searchMode = 'gases';
   let isSearching = false;
+  let hasSearched = false; // ★ 検索を一度でも実行したかを判定するフラグを追加
   let searchResults = [];
 
   let s_gas_a = "Ne", s_gas_b = "Ar", s_gas_c = "Kr";
@@ -27,7 +27,7 @@
   const EPSILON = 0.005;
 
   // ==========================================
-  // ★ 2成分系の最大値(sII)の計算のみを残す
+  // ★ 2成分系の最大値(sII)の計算
   // ==========================================
   function getBinaryMaxObj(name1, name2, P, T, steps = 500) {
     let maxVal = -Infinity;
@@ -41,10 +41,11 @@
   }
 
   // ==========================================
-  // ★ 検索ロジック (sIIシナジー特化・軽量化版)
+  // ★ 検索ロジック
   // ==========================================
   async function runAdvancedSearch() {
     isSearching = true;
+    hasSearched = false; // 検索開始時にリセット
     searchResults = [];
     await new Promise(resolve => setTimeout(resolve, 50));
 
@@ -106,9 +107,7 @@
 
       const maxC = calcComp(locMax.idx, res);
 
-      // 粗い診断
       if (maxC.a > EPSILON && maxC.b > EPSILON && maxC.c > EPSILON && locMax.val > mBinMax + 0.0001) {
-        // 確定診断 (n=100)
         const fineRes = calculateTernaryEnergySurface(g1, g2, g3, p, t, 100);
         let fMax = -Infinity, fMaxIdx = -1;
         for (let i = 0; i < fineRes.flat.z.length; i++) {
@@ -129,6 +128,7 @@
     }
 
     isSearching = false;
+    hasSearched = true; // ★ 計算完了フラグを立てる
   }
 
   function applyResultToMain(result) {
@@ -142,7 +142,7 @@
   }
 
   // ==========================================
-  // ★ メイン描画ロジック (sIIのみ)
+  // ★ メイン描画ロジック
   // ==========================================
   async function draw() {
     if (!Plotly) return;
@@ -150,7 +150,7 @@
     const res = calculateTernaryEnergySurface(gas_a, gas_b, gas_c, press, temp, 100);
 
     let maxZ = -Infinity;
-    let minZ = Infinity; // グラフのカラースケール(軸)のためだけに計算用として残す
+    let minZ = Infinity; 
     let maxIdx = -1;
     
     for (let i = 0; i < res.flat.z.length; i++) {
@@ -232,11 +232,11 @@
 </script>
 
 <main>
-  <h1>3成分系ハイドレート探索AI ver.3.1.0 (sII特化・軽量化)</h1>
+  <h1>3成分系ハイドレート探索 ver.1.2.0</h1>
 
   <div class="action-row" style="margin-bottom: 25px;">
-    <button class="discover-btn" on:click={() => { showSearchModal = true; searchResults = []; }}>
-      🔍 高度なシナジー検索ツールを開く
+    <button class="discover-btn" on:click={() => { showSearchModal = true; searchResults = []; hasSearched = false; }}>
+      🔍 シナジー検索
     </button>
   </div>
 
@@ -281,7 +281,7 @@
         <span><b>Max Value:</b> {analysisMax.val.toFixed(4)} kJ/mol</span>
         <span style="margin-left: 15px; font-weight: bold; color: {analysisMax.hasSynergy ? '#d35400' : '#7f8c8d'};">
           {#if !analysisMax.hasSynergy}
-            (シナジーなし: エッジ上の2成分で十分)
+            (シナジーなし: 2成分で十分)
           {/if}
         </span>
       </div>
@@ -305,45 +305,45 @@
   <div class="modal-overlay">
     <div class="modal-content">
       <div class="modal-header">
-        <h2>🔍 高度なシナジー検索ツール (sII特化)</h2>
+        <h2>🔍 シナジー検索ツール</h2>
         <button class="close-btn" on:click={() => showSearchModal = false}>✕</button>
       </div>
 
       <div class="search-mode-selector">
         <label class={searchMode === 'gases' ? 'active-mode' : ''}>
-          <input type="radio" bind:group={searchMode} value="gases"> 3成分を固定して検索 (温度・圧力を走査)
+          <input type="radio" bind:group={searchMode} value="gases" on:change={() => hasSearched = false}> 3成分を固定して検索 (温度・圧力を走査)
         </label>
         <label class={searchMode === 'pt' ? 'active-mode' : ''}>
-          <input type="radio" bind:group={searchMode} value="pt"> 温度・圧力を固定して検索 (全ガスを走査)
+          <input type="radio" bind:group={searchMode} value="pt" on:change={() => hasSearched = false}> 温度・圧力を固定して検索 (全ガスを走査)
         </label>
       </div>
 
       <div class="search-inputs">
         {#if searchMode === 'gases'}
-          <p class="search-desc">指定した3つのガスにおいて、sII構造の確実なシナジーが発現する温度・圧力を探索します。</p>
+          <p class="search-desc">指定した3つのガスにおいて、sIIにおけるシナジーが発現する温度・圧力を探索します。</p>
           <div class="row">
-            <select bind:value={s_gas_a}> {#each available_gases as g}<option>{g}</option>{/each} </select>
-            <select bind:value={s_gas_b}> {#each available_gases as g}<option>{g}</option>{/each} </select>
-            <select bind:value={s_gas_c}> {#each available_gases as g}<option>{g}</option>{/each} </select>
+            <select bind:value={s_gas_a} on:change={() => hasSearched = false}> {#each available_gases as g}<option>{g}</option>{/each} </select>
+            <select bind:value={s_gas_b} on:change={() => hasSearched = false}> {#each available_gases as g}<option>{g}</option>{/each} </select>
+            <select bind:value={s_gas_c} on:change={() => hasSearched = false}> {#each available_gases as g}<option>{g}</option>{/each} </select>
           </div>
         {:else}
-          <p class="search-desc">指定した温度・圧力において、全ガス組み合わせの中からsIIシナジーを発現するものを探索します。</p>
+          <p class="search-desc">指定した温度・圧力において、全ガス組み合わせの中からsIIにおけるシナジーを発現するものを探索します。</p>
           <div class="row" style="gap: 30px; justify-content: center;">
-            <label>温度 (K): <input type="number" bind:value={s_temp} style="width: 100px; padding: 5px;"></label>
-            <label>圧力 (bar): <input type="number" bind:value={s_press} style="width: 100px; padding: 5px;"></label>
+            <label>温度 (K): <input type="number" bind:value={s_temp} style="width: 100px; padding: 5px;" on:input={() => hasSearched = false}></label>
+            <label>圧力 (bar): <input type="number" bind:value={s_press} style="width: 100px; padding: 5px;" on:input={() => hasSearched = false}></label>
           </div>
         {/if}
       </div>
 
       <button class="run-search-btn" on:click={runAdvancedSearch} disabled={isSearching}>
-        {isSearching ? '⏳ sIIシナジーを総当たり計算中...' : '🚀 検索を実行する'}
+        {isSearching ? '⏳ 総当たり計算中...' : '🚀 検索を実行する'}
       </button>
 
       <div class="search-results">
         {#if isSearching}
           <div class="loading-text">計算しています。数十秒かかる場合があります...</div>
         {:else if searchResults.length > 0}
-          <h4>🎯 発見された完全な3成分シナジー条件 ({searchResults.length} 件)</h4>
+          <h4>🎯 発見された3成分 ({searchResults.length} 件)</h4>
           <ul class="result-list">
             {#each searchResults as res}
               <li class="result-item">
@@ -356,6 +356,11 @@
               </li>
             {/each}
           </ul>
+        {:else if hasSearched}
+          <div class="no-results-text">
+            <h3>⚠️ 該当しませんでした</h3>
+            <p>指定された条件で全パターンを計算しましたが、「3成分シナジー効果」は存在しませんでした。<br>（いずれかの2成分系ブレンドが最強となります）</p>
+          </div>
         {:else}
           <div class="loading-text" style="color: #7f8c8d;">
             (ここに検索結果が表示されます。条件によっては見つからない場合があります)
@@ -445,6 +450,14 @@
   .search-results h4 { margin: 0 0 15px 0; color: #2c3e50; }
   .loading-text { text-align: center; margin-top: 20px; font-weight: bold; color: #e67e22; }
   
+  /* ★ 該当しなかった場合の専用スタイル */
+  .no-results-text {
+    background: #fff5f5; border-left: 5px solid #ff7675; padding: 15px 20px;
+    border-radius: 8px; margin-top: 10px; text-align: center;
+  }
+  .no-results-text h3 { margin: 0 0 10px 0; color: #d63031; font-size: 1.2rem; }
+  .no-results-text p { margin: 0; color: #555; font-size: 0.95rem; line-height: 1.5; }
+
   .result-list { list-style: none; padding: 0; margin: 0; display: flex; flex-direction: column; gap: 10px; }
   .result-item { 
     background: #fdfdfd; border: 1px solid #e0e0e0; border-radius: 8px; padding: 12px 15px;
