@@ -22,23 +22,39 @@
     // 計算実行
     const res = calculateTernaryEnergySurface(gas_a, gas_b, gas_c, press, temp, 60);
 
-    // --- 最大値の探索とモル分率計算 ---
+    // --- 最大値・最小値の探索 ---
     let maxZ = -Infinity;
+    let minZ = Infinity;
     let maxIdx = -1;
     
     for (let i = 0; i < res.flat.z.length; i++) {
       const z = res.flat.z[i];
-      if (z !== null && z > maxZ) {
-        maxZ = z;
-        maxIdx = i;
+      if (z !== null) {
+        if (z > maxZ) {
+          maxZ = z;
+          maxIdx = i;
+        }
+        if (z < minZ) {
+          minZ = z;
+        }
       }
     }
 
+    // --- 0を境界にした「パキッとした2色分け」のためのスケール計算 ---
+    // Zの絶対値の最大値をとることで、カラースケールの中心(0.5)を必ず 0 kJ/mol に固定する
+    const maxAbs = Math.max(Math.abs(maxZ), Math.abs(minZ), 0.1); 
+
+    const discreteColorscale = [
+      [0.0, '#008080'], // Teal (sI)
+      [0.5, '#008080'], // Teal (0未満まで)
+      [0.5, '#FF8C00'], // Dark Orange (0以上から)
+      [1.0, '#FF8C00']  // Dark Orange (sII)
+    ];
+
+    // --- モル分率計算 ---
     if (maxIdx !== -1) {
       const px = res.flat.x[maxIdx];
       const py = res.flat.y[maxIdx];
-      // 逆算: y = 0.866 * c  => c = y / 0.866
-      //       x = b + 0.5*c  => b = x - 0.5*c
       const c = py / 0.866025;
       const b = px - 0.5 * c;
       const a = 1.0 - b - c;
@@ -50,39 +66,47 @@
         c: Math.max(0, c) 
       };
     }
-    // ---------------------------
 
     // 1. Mesh3D (見た目担当)
     const meshTrace = {
       type: 'mesh3d',
       x: res.flat.x, y: res.flat.y, z: res.flat.z,
       intensity: res.flat.z, 
-      colorscale: 'RdBu',
+      cmin: -maxAbs, // カラースケールの下限
+      cmax: maxAbs,  // カラースケールの上限
+      colorscale: discreteColorscale,
       showscale: true,
-      colorbar: { title: 'Δμ (kJ/mol)' },
-      hovertemplate: '安定度: %{z:.3f} kJ/mol<extra></extra>',
+      colorbar: { 
+        title: '<b>構造</b>',
+        tickvals: [-maxAbs/2, maxAbs/2],
+        ticktext: ['sI (ティール)', 'sII (オレンジ)']
+      },
+      hovertemplate: 'ΔμsI - ΔμsII: %{z:.3f} kJ/mol<extra></extra>',
       contour: { show: false } 
     };
 
-    // 2. Surface (等高線担当)
+    // 2. Surface (Z=0の境界線担当)
     const contourTrace = {
       type: 'surface',
       x: res.matrix.x, y: res.matrix.y, z: res.matrix.z,
       showscale: false, 
-      opacity: 0.9,
+      opacity: 1.0,
       surfacecolor: res.matrix.z, 
-      colorscale: 'RdBu',
-      hidesurface: true, 
+      cmin: -maxAbs,
+      cmax: maxAbs,
+      colorscale: discreteColorscale,
+      hidesurface: true, // 面自体は隠して、等高線だけを描画
       
       contours: {
         z: {
           show: true,
           usecolormap: false,
           project: { z: false }, // 空中に浮かせない
-          color: 'black',
-          width: 5,
-          start: 0,
+          color: 'black',        // 境界線の色
+          width: 6,              // 線を太く強調
+          start: 0,              // 0 の位置だけに線を引く
           end: 0,
+          size: 1
         },
         x: { show: false },
         y: { show: false }
@@ -90,25 +114,25 @@
       hoverinfo: 'skip'
     };
 
-    // 3. 基準面 (三角形)
+    // 3. 基準面 (Z=0 の透明な氷の板)
     const zeroPlane = {
       type: 'mesh3d',
       x: [0, 1, 0.5], y: [0, 0, 0.866], z: [0, 0, 0],
-      color: 'gray', opacity: 0.3, hoverinfo: 'skip'
+      color: '#ffffff', opacity: 0.3, hoverinfo: 'skip'
     };
 
-    const maxZ_plot = Math.max(...res.flat.z, 0.5) + 0.3;
+    const maxZ_plot = Math.max(maxZ, 0.5) + 0.5; // テキストが埋もれないように少し高くする
     const layout = {
-      title: `Phase Diagram (T=${temp}K, P=${press}bar)`,
-      uirevision: 'true', // カメラ固定
+      title: `Ternary Phase Diagram (T=${temp}K, P=${press}bar)`,
+      uirevision: 'true', // カメラ固定（スライダーを動かしても視点がリセットされない）
       scene: {
         aspectratio: {x: 1, y: 0.866, z: 0.6},
-        zaxis: {title: 'sI(青) <---> sII(赤)'},
+        zaxis: { title: '<b>ΔμsI - ΔμsII [kJ/mol]</b>' }, // 縦軸の名前を変更
         xaxis: {visible: false}, yaxis: {visible: false},
         annotations: [
-          { x: 0, y: 0, z: maxZ_plot, text: `A: ${gas_a}`, showarrow:false, font:{size:14}, bgcolor:'rgba(255,255,255,0.7)' },
-          { x: 1, y: 0, z: maxZ_plot, text: `B: ${gas_b}`, showarrow:false, font:{size:14}, bgcolor:'rgba(255,255,255,0.7)' },
-          { x: 0.5, y: 0.866, z: maxZ_plot, text: `C: ${gas_c}`, showarrow:false, font:{size:14}, bgcolor:'rgba(255,255,255,0.7)' }
+          { x: 0, y: 0, z: maxZ_plot, text: `A: ${gas_a}`, showarrow:false, font:{size:14, color:'black'}, bgcolor:'rgba(255,255,255,0.8)' },
+          { x: 1, y: 0, z: maxZ_plot, text: `B: ${gas_b}`, showarrow:false, font:{size:14, color:'black'}, bgcolor:'rgba(255,255,255,0.8)' },
+          { x: 0.5, y: 0.866, z: maxZ_plot, text: `C: ${gas_c}`, showarrow:false, font:{size:14, color:'black'}, bgcolor:'rgba(255,255,255,0.8)' }
         ]
       },
       margin: {t: 50, b: 0, l: 0, r: 0},
@@ -126,7 +150,7 @@
 </script>
 
 <main>
-  <h1>3成分系ハイドレートシミュレータ ver.1.1.0</h1>
+  <h1>3成分系ハイドレート 相図シミュレータ</h1>
 
   <div class="controls">
     <div class="row">
@@ -152,15 +176,18 @@
         <input type="range" min="100" max="350" step="0.5" bind:value={temp} on:input={draw}>
       </div>
       <div class="control-group">
-        <div class="label-row"> <span>Press (bar)</span> <input type="number" class="number-input" min="1" max="500" step="1" bind:value={press} on:input={draw}> </div>
+        <div class="label-row"> <span>Total Pressure (bar)</span> <input type="number" class="number-input" min="1" max="500" step="1" bind:value={press} on:input={draw}> </div>
         <input type="range" min="1" max="500" step="1" bind:value={press} on:input={draw}>
       </div>
     </div>
 
     <div class="info-box">
-      <h3>📊 Analysis (Max Stability Diff)</h3>
+      <h3>📊 ΔμsI - ΔμsII の最大値 (最適ブレンド)</h3>
       <div class="info-row">
         <span><b>Max Value:</b> {maxInfo.val.toFixed(4)} kJ/mol</span>
+        <span style="margin-left: 15px; font-weight: bold; color: {maxInfo.val > 0 ? '#FF8C00' : '#008080'};">
+          ({maxInfo.val > 0 ? 'sII 構造が支配的' : 'sI 構造が支配的'})
+        </span>
       </div>
       <div class="info-composition">
         <span style="color: #d63031;">A: {(maxInfo.a * 100).toFixed(1)}%</span>
@@ -181,10 +208,8 @@
   main { max-width: 900px; margin: 0 auto; padding: 20px; font-family: 'Helvetica Neue', Arial, sans-serif; color: #333; }
   h1 { text-align: center; margin-bottom: 30px; font-size: 1.8rem; color: #2c3e50; }
   
-  /* コントロールパネル全体 */
   .controls { background: #fff; padding: 25px; border-radius: 12px; box-shadow: 0 4px 15px rgba(0,0,0,0.08); margin-bottom: 30px; border: 1px solid #eee; }
   
-  /* ガス選択部分 */
   .row { display: flex; gap: 20px; justify-content: space-between; flex-wrap: wrap; }
   .gas-box { flex: 1; min-width: 200px; display: flex; flex-direction: column; }
   label { font-weight: bold; font-size: 0.9rem; margin-bottom: 5px; display: flex; align-items: center; gap: 8px; }
@@ -197,21 +222,17 @@
   
   hr { border: 0; border-top: 1px solid #eee; margin: 25px 0; }
   
-  /* スライダー部分 */
   .sliders-container { display: grid; grid-template-columns: 1fr 1fr; gap: 40px; margin-bottom: 20px; }
   .control-group { display: flex; flex-direction: column; gap: 10px; }
   .label-row { display: flex; justify-content: space-between; align-items: center; font-weight: bold; color: #555; font-size: 0.95rem; }
   .number-input { width: 80px; padding: 6px; border: 1px solid #ccc; border-radius: 4px; text-align: right; font-size: 1rem; }
   input[type=range] { width: 100%; cursor: pointer; height: 6px; background: #ddd; border-radius: 5px; outline: none; -webkit-appearance: none; }
   
-  /* 分析情報ボックス */
   .info-box { background: #f8f9fa; padding: 15px 20px; border-radius: 8px; border-left: 5px solid #6c5ce7; }
   .info-box h3 { margin: 0 0 10px 0; font-size: 1rem; color: #555; text-transform: uppercase; letter-spacing: 0.5px; }
   .info-composition { display: flex; gap: 20px; margin-top: 5px; font-weight: bold; font-size: 1.1rem; }
 
-  /* グラフエリア */
   #myDiv { border-radius: 8px; overflow: hidden; border: 1px solid #eee; }
 
-  /* フッター */
   footer { margin-top: 40px; text-align: right; color: #aaa; font-size: 0.9rem; border-top: 1px solid #eee; padding-top: 10px; }
 </style>
