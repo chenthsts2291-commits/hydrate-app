@@ -16,11 +16,8 @@
   
   let Plotly;
 
-  // ==========================================
-  // ★ シナジー検索ツール用の変数と状態
-  // ==========================================
   let showSearchModal = false;
-  let searchMode = 'gases'; // 'gases' or 'pt'
+  let searchMode = 'gases';
   let isSearching = false;
   let searchResults = [];
 
@@ -30,26 +27,28 @@
   const EPSILON = 0.005;
 
   // ==========================================
-  // ★ 補助関数: 2成分系の最大値(sII)と最小値(sI)
+  // ★ 精度向上: 2成分系の最大値・最小値（組成も返すように改良）
   // ==========================================
-  function getBinaryMax(name1, name2, P, T, steps = 100) {
-    let maxBinary = -Infinity;
+  function getBinaryMaxObj(name1, name2, P, T, steps = 500) {
+    let maxVal = -Infinity;
+    let bestFrac = 0;
     for (let i = 0; i <= steps; i++) {
-      const frac1 = i / steps;
-      const diff = calculateStability(name1, name2, frac1, 1.0 - frac1, P, T);
-      if (diff !== null && diff > maxBinary) maxBinary = diff;
+      const frac = i / steps;
+      const diff = calculateStability(name1, name2, frac, 1.0 - frac, P, T);
+      if (diff !== null && diff > maxVal) { maxVal = diff; bestFrac = frac; }
     }
-    return maxBinary;
+    return { val: maxVal, f1: bestFrac, f2: 1.0 - bestFrac };
   }
 
-  function getBinaryMin(name1, name2, P, T, steps = 100) {
-    let minBinary = Infinity;
+  function getBinaryMinObj(name1, name2, P, T, steps = 500) {
+    let minVal = Infinity;
+    let bestFrac = 0;
     for (let i = 0; i <= steps; i++) {
-      const frac1 = i / steps;
-      const diff = calculateStability(name1, name2, frac1, 1.0 - frac1, P, T);
-      if (diff !== null && diff < minBinary) minBinary = diff;
+      const frac = i / steps;
+      const diff = calculateStability(name1, name2, frac, 1.0 - frac, P, T);
+      if (diff !== null && diff < minVal) { minVal = diff; bestFrac = frac; }
     }
-    return minBinary;
+    return { val: minVal, f1: bestFrac, f2: 1.0 - bestFrac };
   }
 
   // ==========================================
@@ -62,7 +61,6 @@
 
     const N = available_gases.length;
 
-    // 全ガス走査時の高速化キャッシュ
     let binMaxCache = {};
     let binMinCache = {};
     if (searchMode === 'pt') {
@@ -70,19 +68,19 @@
         for (let j = i + 1; j < N; j++) {
            const g1 = available_gases[i], g2 = available_gases[j];
            const key = [g1, g2].sort().join('-');
-           binMaxCache[key] = getBinaryMax(g1, g2, s_press, s_temp, 30);
-           binMinCache[key] = getBinaryMin(g1, g2, s_press, s_temp, 30);
+           binMaxCache[key] = getBinaryMaxObj(g1, g2, s_press, s_temp, 50).val;
+           binMinCache[key] = getBinaryMinObj(g1, g2, s_press, s_temp, 50).val;
         }
       }
     }
 
-    const getCachedMax = (g1, g2, p, t) => {
+    const getCachedMaxVal = (g1, g2, p, t) => {
       if (searchMode === 'pt') return binMaxCache[[g1, g2].sort().join('-')];
-      return getBinaryMax(g1, g2, p, t, 30);
+      return getBinaryMaxObj(g1, g2, p, t, 50).val;
     };
-    const getCachedMin = (g1, g2, p, t) => {
+    const getCachedMinVal = (g1, g2, p, t) => {
       if (searchMode === 'pt') return binMinCache[[g1, g2].sort().join('-')];
-      return getBinaryMin(g1, g2, p, t, 30);
+      return getBinaryMinObj(g1, g2, p, t, 50).val;
     };
 
     if (searchMode === 'gases') {
@@ -103,18 +101,10 @@
     }
 
     function evaluateSynergyForSearch(g1, g2, g3, p, t) {
-      const mAB_max = getCachedMax(g1, g2, p, t);
-      const mBC_max = getCachedMax(g2, g3, p, t);
-      const mCA_max = getCachedMax(g1, g3, p, t);
-      const mBinMax = Math.max(mAB_max, mBC_max, mCA_max);
+      const mBinMax = Math.max(getCachedMaxVal(g1, g2, p, t), getCachedMaxVal(g2, g3, p, t), getCachedMaxVal(g1, g3, p, t));
+      const mBinMin = Math.min(getCachedMinVal(g1, g2, p, t), getCachedMinVal(g2, g3, p, t), getCachedMinVal(g1, g3, p, t));
 
-      const mAB_min = getCachedMin(g1, g2, p, t);
-      const mBC_min = getCachedMin(g2, g3, p, t);
-      const mCA_min = getCachedMin(g1, g3, p, t);
-      const mBinMin = Math.min(mAB_min, mBC_min, mCA_min);
-
-      // まず粗いメッシュ(n=15)でアタリをつける
-      const res = calculateTernaryEnergySurface(g1, g2, g3, p, t, 15);
+      const res = calculateTernaryEnergySurface(g1, g2, g3, p, t, 20); // アタリ付けもn=20に精度UP
       
       let locMax = { val: -Infinity, idx: -1 };
       let locMin = { val: Infinity, idx: -1 };
@@ -140,16 +130,15 @@
       const maxC = calcComp(locMax.idx, res);
       const minC = calcComp(locMin.idx, res);
 
-      // 粗いチェック
       if (maxC.a > EPSILON && maxC.b > EPSILON && maxC.c > EPSILON && locMax.val > mBinMax + 0.001) {
         roughSynergy = true; synergyType = "sII優位";
       } else if (minC.a > EPSILON && minC.b > EPSILON && minC.c > EPSILON && locMin.val < mBinMin - 0.001) {
         roughSynergy = true; synergyType = "sI優位";
       }
 
-      // ★ 粗いチェックでヒットした場合のみ、メイン画面と同じ高精度(n=60)で確定診断を行う
+      // ★ 確定診断 (n=100の超高精度で最終確認)
       if (roughSynergy) {
-        const fineRes = calculateTernaryEnergySurface(g1, g2, g3, p, t, 60);
+        const fineRes = calculateTernaryEnergySurface(g1, g2, g3, p, t, 100);
         let fMax = -Infinity, fMin = Infinity, fMaxIdx = -1, fMinIdx = -1;
         for (let i = 0; i < fineRes.flat.z.length; i++) {
           if (fineRes.flat.z[i] !== null) {
@@ -158,18 +147,19 @@
           }
         }
         
+        const exactBinMax = Math.max(getBinaryMaxObj(g1, g2, p, t).val, getBinaryMaxObj(g2, g3, p, t).val, getBinaryMaxObj(g1, g3, p, t).val);
+        const exactBinMin = Math.min(getBinaryMinObj(g1, g2, p, t).val, getBinaryMinObj(g2, g3, p, t).val, getBinaryMinObj(g1, g3, p, t).val);
+
         let compStr = "";
         if (synergyType === "sII優位") {
           const fC = calcComp(fMaxIdx, fineRes);
-          // 確定診断：高精度でも確実に内側にピークがあるか？
-          if (fC.a > EPSILON && fC.b > EPSILON && fC.c > EPSILON && fMax > mBinMax + 0.0005) {
+          if (fC.a > EPSILON && fC.b > EPSILON && fC.c > EPSILON && fMax > exactBinMax + 0.0005) {
             compStr = `${g1}:${(fC.a*100).toFixed(1)}%  ${g2}:${(fC.b*100).toFixed(1)}%  ${g3}:${(fC.c*100).toFixed(1)}%`;
             searchResults.push({ temp: t, press: p, gases: [g1, g2, g3], type: synergyType, comp: compStr });
           }
         } else {
           const fC = calcComp(fMinIdx, fineRes);
-          // 確定診断：高精度でも確実に内側にピークがあるか？
-          if (fC.a > EPSILON && fC.b > EPSILON && fC.c > EPSILON && fMin < mBinMin - 0.0005) {
+          if (fC.a > EPSILON && fC.b > EPSILON && fC.c > EPSILON && fMin < exactBinMin - 0.0005) {
             compStr = `${g1}:${(fC.a*100).toFixed(1)}%  ${g2}:${(fC.b*100).toFixed(1)}%  ${g3}:${(fC.c*100).toFixed(1)}%`;
             searchResults.push({ temp: t, press: p, gases: [g1, g2, g3], type: synergyType, comp: compStr });
           }
@@ -191,12 +181,13 @@
   }
 
   // ==========================================
-  // ★ メイン描画ロジック
+  // ★ メイン描画ロジック (矛盾完全排除版)
   // ==========================================
   async function draw() {
     if (!Plotly) return;
 
-    const res = calculateTernaryEnergySurface(gas_a, gas_b, gas_c, press, temp, 60);
+    // 計算解像度を n=100 (約5000点) に引き上げ
+    const res = calculateTernaryEnergySurface(gas_a, gas_b, gas_c, press, temp, 100);
 
     let maxZ = -Infinity;
     let minZ = Infinity;
@@ -211,28 +202,62 @@
       }
     }
 
-    const maxBinary = Math.max(getBinaryMax(gas_a, gas_b, press, temp), getBinaryMax(gas_b, gas_c, press, temp), getBinaryMax(gas_c, gas_a, press, temp));
-    const minBinary = Math.min(getBinaryMin(gas_a, gas_b, press, temp), getBinaryMin(gas_b, gas_c, press, temp), getBinaryMin(gas_c, gas_a, press, temp));
+    // ★ 500分割の超高精度で2成分エッジの限界値を計算
+    const binAB_max = getBinaryMaxObj(gas_a, gas_b, press, temp, 500);
+    const binBC_max = getBinaryMaxObj(gas_b, gas_c, press, temp, 500);
+    const binCA_max = getBinaryMaxObj(gas_c, gas_a, press, temp, 500);
+    let bestBinMax = binAB_max;
+    if (binBC_max.val > bestBinMax.val) bestBinMax = binBC_max;
+    if (binCA_max.val > bestBinMax.val) bestBinMax = binCA_max;
+
+    const binAB_min = getBinaryMinObj(gas_a, gas_b, press, temp, 500);
+    const binBC_min = getBinaryMinObj(gas_b, gas_c, press, temp, 500);
+    const binCA_min = getBinaryMinObj(gas_c, gas_a, press, temp, 500);
+    let bestBinMin = binAB_min;
+    if (binBC_min.val < bestBinMin.val) bestBinMin = binBC_min;
+    if (binCA_min.val < bestBinMin.val) bestBinMin = binCA_min;
 
     const maxAbs = Math.max(Math.abs(maxZ), Math.abs(minZ), 0.1); 
     const discreteColorscale = [ [0.0, '#008080'], [0.5, '#008080'], [0.5, '#FF8C00'], [1.0, '#FF8C00'] ];
 
+    // --- 最大値 (sII) の確定ロジック ---
     if (maxIdx !== -1) {
       const px = res.flat.x[maxIdx]; const py = res.flat.y[maxIdx];
       const c = py / 0.866025; const b = px - 0.5 * c; const a = 1.0 - b - c;
       const compA = Math.max(0, a); const compB = Math.max(0, b); const compC = Math.max(0, c);
       
-      const hasSynergyMax = compA > EPSILON && compB > EPSILON && compC > EPSILON && (maxZ > maxBinary + 0.0005);
-      analysisMax = { val: maxZ, a: compA, b: compB, c: compC, hasSynergy: hasSynergyMax };
+      const hasSynergyMax = compA > EPSILON && compB > EPSILON && compC > EPSILON && (maxZ > bestBinMax.val + 0.0005);
+
+      if (hasSynergyMax) {
+        analysisMax = { val: maxZ, a: compA, b: compB, c: compC, hasSynergy: true };
+      } else {
+        // ★ 矛盾排除: シナジーがないなら、ズレた3成分座標を捨てて「真の2成分エッジ座標」で上書き！
+        let ba = 0, bb = 0, bc = 0;
+        if (bestBinMax === binAB_max) { ba = bestBinMax.f1; bb = bestBinMax.f2; }
+        else if (bestBinMax === binBC_max) { bb = bestBinMax.f1; bc = bestBinMax.f2; }
+        else if (bestBinMax === binCA_max) { bc = bestBinMax.f1; ba = bestBinMax.f2; }
+        analysisMax = { val: bestBinMax.val, a: ba, b: bb, c: bc, hasSynergy: false };
+      }
     }
 
+    // --- 最小値 (sI) の確定ロジック ---
     if (minIdx !== -1) {
       const px = res.flat.x[minIdx]; const py = res.flat.y[minIdx];
       const c = py / 0.866025; const b = px - 0.5 * c; const a = 1.0 - b - c;
       const compA = Math.max(0, a); const compB = Math.max(0, b); const compC = Math.max(0, c);
 
-      const hasSynergyMin = compA > EPSILON && compB > EPSILON && compC > EPSILON && (minZ < minBinary - 0.0005);
-      analysisMin = { val: minZ, a: compA, b: compB, c: compC, hasSynergy: hasSynergyMin };
+      const hasSynergyMin = compA > EPSILON && compB > EPSILON && compC > EPSILON && (minZ < bestBinMin.val - 0.0005);
+
+      if (hasSynergyMin) {
+        analysisMin = { val: minZ, a: compA, b: compB, c: compC, hasSynergy: true };
+      } else {
+        // ★ 矛盾排除: シナジーがないなら、ズレた3成分座標を捨てて「真の2成分エッジ座標」で上書き！
+        let ba = 0, bb = 0, bc = 0;
+        if (bestBinMin === binAB_min) { ba = bestBinMin.f1; bb = bestBinMin.f2; }
+        else if (bestBinMin === binBC_min) { bb = bestBinMin.f1; bc = bestBinMin.f2; }
+        else if (bestBinMin === binCA_min) { bc = bestBinMin.f1; ba = bestBinMin.f2; }
+        analysisMin = { val: bestBinMin.val, a: ba, b: bb, c: bc, hasSynergy: false };
+      }
     }
 
     const meshTrace = {
@@ -278,7 +303,7 @@
 </script>
 
 <main>
-  <h1>3成分系ハイドレート探索AI ver.2.2.0</h1>
+  <h1>3成分系ハイドレート探索AI ver.2.3.0</h1>
 
   <div class="action-row" style="margin-bottom: 25px;">
     <button class="discover-btn" on:click={() => { showSearchModal = true; searchResults = []; }}>
