@@ -53,7 +53,7 @@
   }
 
   // ==========================================
-  // ★ 検索ロジック (偽陽性を防ぐ完全版)
+  // ★ 検索ロジック
   // ==========================================
   async function runAdvancedSearch() {
     isSearching = true;
@@ -103,7 +103,6 @@
     }
 
     function evaluateSynergyForSearch(g1, g2, g3, p, t) {
-      // 2成分の限界値を計算
       const mAB_max = getCachedMax(g1, g2, p, t);
       const mBC_max = getCachedMax(g2, g3, p, t);
       const mCA_max = getCachedMax(g1, g3, p, t);
@@ -114,6 +113,7 @@
       const mCA_min = getCachedMin(g1, g3, p, t);
       const mBinMin = Math.min(mAB_min, mBC_min, mCA_min);
 
+      // まず粗いメッシュ(n=15)でアタリをつける
       const res = calculateTernaryEnergySurface(g1, g2, g3, p, t, 15);
       
       let locMax = { val: -Infinity, idx: -1 };
@@ -126,32 +126,54 @@
         }
       }
 
-      const calcComp = (idx) => {
-        const px = res.flat.x[idx];
-        const py = res.flat.y[idx];
+      const calcComp = (idx, dataset) => {
+        const px = dataset.flat.x[idx];
+        const py = dataset.flat.y[idx];
         const c = py / 0.866025;
         const b = px - 0.5 * c;
         return { a: Math.max(0, 1.0 - b - c), b: Math.max(0, b), c: Math.max(0, c) };
       };
 
-      let foundSynergy = false;
+      let roughSynergy = false;
       let synergyType = "";
-      let compStr = "";
 
-      const maxC = calcComp(locMax.idx);
-      const minC = calcComp(locMin.idx);
+      const maxC = calcComp(locMax.idx, res);
+      const minC = calcComp(locMin.idx, res);
 
-      // ★ 偽陽性防止：組成が内側(>0)であり、かつエネルギーがエッジを確実に上回る(下回る)こと！
+      // 粗いチェック
       if (maxC.a > EPSILON && maxC.b > EPSILON && maxC.c > EPSILON && locMax.val > mBinMax + 0.001) {
-        foundSynergy = true; synergyType = "sII優位";
-        compStr = `${g1}:${(maxC.a*100).toFixed(0)}% ${g2}:${(maxC.b*100).toFixed(0)}% ${g3}:${(maxC.c*100).toFixed(0)}%`;
+        roughSynergy = true; synergyType = "sII優位";
       } else if (minC.a > EPSILON && minC.b > EPSILON && minC.c > EPSILON && locMin.val < mBinMin - 0.001) {
-        foundSynergy = true; synergyType = "sI優位";
-        compStr = `${g1}:${(minC.a*100).toFixed(0)}% ${g2}:${(minC.b*100).toFixed(0)}% ${g3}:${(minC.c*100).toFixed(0)}%`;
+        roughSynergy = true; synergyType = "sI優位";
       }
 
-      if (foundSynergy) {
-        searchResults.push({ temp: t, press: p, gases: [g1, g2, g3], type: synergyType, comp: compStr });
+      // ★ 粗いチェックでヒットした場合のみ、メイン画面と同じ高精度(n=60)で確定診断を行う
+      if (roughSynergy) {
+        const fineRes = calculateTernaryEnergySurface(g1, g2, g3, p, t, 60);
+        let fMax = -Infinity, fMin = Infinity, fMaxIdx = -1, fMinIdx = -1;
+        for (let i = 0; i < fineRes.flat.z.length; i++) {
+          if (fineRes.flat.z[i] !== null) {
+            if (fineRes.flat.z[i] > fMax) { fMax = fineRes.flat.z[i]; fMaxIdx = i; }
+            if (fineRes.flat.z[i] < fMin) { fMin = fineRes.flat.z[i]; fMinIdx = i; }
+          }
+        }
+        
+        let compStr = "";
+        if (synergyType === "sII優位") {
+          const fC = calcComp(fMaxIdx, fineRes);
+          // 確定診断：高精度でも確実に内側にピークがあるか？
+          if (fC.a > EPSILON && fC.b > EPSILON && fC.c > EPSILON && fMax > mBinMax + 0.0005) {
+            compStr = `${g1}:${(fC.a*100).toFixed(1)}%  ${g2}:${(fC.b*100).toFixed(1)}%  ${g3}:${(fC.c*100).toFixed(1)}%`;
+            searchResults.push({ temp: t, press: p, gases: [g1, g2, g3], type: synergyType, comp: compStr });
+          }
+        } else {
+          const fC = calcComp(fMinIdx, fineRes);
+          // 確定診断：高精度でも確実に内側にピークがあるか？
+          if (fC.a > EPSILON && fC.b > EPSILON && fC.c > EPSILON && fMin < mBinMin - 0.0005) {
+            compStr = `${g1}:${(fC.a*100).toFixed(1)}%  ${g2}:${(fC.b*100).toFixed(1)}%  ${g3}:${(fC.c*100).toFixed(1)}%`;
+            searchResults.push({ temp: t, press: p, gases: [g1, g2, g3], type: synergyType, comp: compStr });
+          }
+        }
       }
     }
 
@@ -189,7 +211,6 @@
       }
     }
 
-    // 2成分の限界値を精密に計算
     const maxBinary = Math.max(getBinaryMax(gas_a, gas_b, press, temp), getBinaryMax(gas_b, gas_c, press, temp), getBinaryMax(gas_c, gas_a, press, temp));
     const minBinary = Math.min(getBinaryMin(gas_a, gas_b, press, temp), getBinaryMin(gas_b, gas_c, press, temp), getBinaryMin(gas_c, gas_a, press, temp));
 
@@ -201,9 +222,7 @@
       const c = py / 0.866025; const b = px - 0.5 * c; const a = 1.0 - b - c;
       const compA = Math.max(0, a); const compB = Math.max(0, b); const compC = Math.max(0, c);
       
-      // ★ 厳格なシナジー判定（組成＆エネルギーのダブルチェック）
       const hasSynergyMax = compA > EPSILON && compB > EPSILON && compC > EPSILON && (maxZ > maxBinary + 0.0005);
-
       analysisMax = { val: maxZ, a: compA, b: compB, c: compC, hasSynergy: hasSynergyMax };
     }
 
@@ -212,9 +231,7 @@
       const c = py / 0.866025; const b = px - 0.5 * c; const a = 1.0 - b - c;
       const compA = Math.max(0, a); const compB = Math.max(0, b); const compC = Math.max(0, c);
 
-      // ★ 厳格なシナジー判定（組成＆エネルギーのダブルチェック）
       const hasSynergyMin = compA > EPSILON && compB > EPSILON && compC > EPSILON && (minZ < minBinary - 0.0005);
-
       analysisMin = { val: minZ, a: compA, b: compB, c: compC, hasSynergy: hasSynergyMin };
     }
 
@@ -261,7 +278,7 @@
 </script>
 
 <main>
-  <h1>3成分系ハイドレート探索AI ver.2.1.0</h1>
+  <h1>3成分系ハイドレート探索AI ver.2.2.0</h1>
 
   <div class="action-row" style="margin-bottom: 25px;">
     <button class="discover-btn" on:click={() => { showSearchModal = true; searchResults = []; }}>
@@ -389,7 +406,7 @@
       </div>
 
       <button class="run-search-btn" on:click={runAdvancedSearch} disabled={isSearching}>
-        {isSearching ? '⏳ 厳格な熱力学フィルターで総当たり計算中...' : '🚀 検索を実行する'}
+        {isSearching ? '⏳ 高精度な熱力学フィルターで確定診断中...' : '🚀 検索を実行する'}
       </button>
 
       <div class="search-results">
