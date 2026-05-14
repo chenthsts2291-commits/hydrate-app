@@ -1,6 +1,9 @@
 <script>
   import { onMount } from 'svelte';
-  import { calculateTernaryEnergySurface, inter } from './vdwp_core.js';
+  // vdWPコアロジックをインポート
+  // 注意: ここでインポートしている calculateTernaryEnergySurface は、
+  // 3成分系のデータを返す前提です。シナジー判定のために内部で2成分系も計算します。
+  import { calculateTernaryEnergySurface, calculateStability, inter } from './vdwp_core.js';
 
   // --- 初期設定 ---
   let temp = 273.15;
@@ -11,22 +14,43 @@
   let gas_b = "Ethane";
   let gas_c = "CF4";
 
-  // 最大値情報の格納用
-  let maxInfo = { val: 0, a: 0, b: 0, c: 0 };
+  // 解析情報の格納用
+  let analysisInfo = {
+    maxZ: 0,
+    compA: 0, compB: 0, compC: 0,
+    hasSynergy: false,
+    synergyIncrease: 0,
+    maxBinaryVal: 0
+  };
 
   let Plotly;
+
+  // 2成分系の最大安定度を計算する補助関数
+  function getBinaryMax(name1, name2, P, T) {
+    let maxBinary = -Infinity;
+    // 0%から100%まで1%刻みでスキャン
+    for (let i = 0; i <= 100; i++) {
+      const frac1 = i / 100;
+      const frac2 = 1.0 - frac1;
+      const diff = calculateStability(name1, name2, frac1, frac2, P, T);
+      if (diff !== null && diff > maxBinary) {
+        maxBinary = diff;
+      }
+    }
+    return maxBinary;
+  }
 
   async function draw() {
     if (!Plotly) return;
 
-    // 計算実行
+    // --- 1. 3成分系の計算 ---
     const res = calculateTernaryEnergySurface(gas_a, gas_b, gas_c, press, temp, 60);
 
-    // --- 最大値・最小値の探索 ---
     let maxZ = -Infinity;
     let minZ = Infinity;
     let maxIdx = -1;
     
+    // 全データから3成分系の最大・最小を探索
     for (let i = 0; i < res.flat.z.length; i++) {
       const z = res.flat.z[i];
       if (z !== null) {
@@ -40,8 +64,39 @@
       }
     }
 
-    // --- 0を境界にした「パキッとした2色分け」のためのスケール計算 ---
-    // Zの絶対値の最大値をとることで、カラースケールの中心(0.5)を必ず 0 kJ/mol に固定する
+    // --- 2. シナジー効果の判定 ---
+    // (A-B), (B-C), (C-A) の2成分系それぞれの最大値を計算
+    const maxAB = getBinaryMax(gas_a, gas_b, press, temp);
+    const maxBC = getBinaryMax(gas_b, gas_c, press, temp);
+    const maxCA = getBinaryMax(gas_c, gas_a, press, temp);
+
+    // 2成分系の中での絶対的な最大値
+    const maxBinary = Math.max(maxAB, maxBC, maxCA);
+
+    // 3成分系の最大値が、2成分系の最大値を上回っているか判定
+    const hasSynergy = maxZ > maxBinary + 0.001; // 浮動小数点の誤差を考慮
+    const synergyIncrease = hasSynergy ? ((maxZ - maxBinary) / maxBinary * 100) : 0;
+
+    // --- 3. 解析情報の更新とモル分率計算 ---
+    if (maxIdx !== -1) {
+      const px = res.flat.x[maxIdx];
+      const py = res.flat.y[maxIdx];
+      const c = py / 0.866025;
+      const b = px - 0.5 * c;
+      const a = 1.0 - b - c;
+
+      analysisInfo = { 
+        maxZ: maxZ, 
+        compA: Math.max(0, a), 
+        compB: Math.max(0, b), 
+        compC: Math.max(0, c),
+        hasSynergy: hasSynergy,
+        synergyIncrease: synergyIncrease,
+        maxBinaryVal: maxBinary
+      };
+    }
+
+    // --- 4. グラフ描画データの設定 ---
     const maxAbs = Math.max(Math.abs(maxZ), Math.abs(minZ), 0.1); 
 
     const discreteColorscale = [
@@ -51,29 +106,12 @@
       [1.0, '#FF8C00']  // Dark Orange (sII)
     ];
 
-    // --- モル分率計算 ---
-    if (maxIdx !== -1) {
-      const px = res.flat.x[maxIdx];
-      const py = res.flat.y[maxIdx];
-      const c = py / 0.866025;
-      const b = px - 0.5 * c;
-      const a = 1.0 - b - c;
-
-      maxInfo = { 
-        val: maxZ, 
-        a: Math.max(0, a), 
-        b: Math.max(0, b), 
-        c: Math.max(0, c) 
-      };
-    }
-
-    // 1. Mesh3D (見た目担当)
+    // Mesh3D (曲面)
     const meshTrace = {
       type: 'mesh3d',
       x: res.flat.x, y: res.flat.y, z: res.flat.z,
       intensity: res.flat.z, 
-      cmin: -maxAbs, // カラースケールの下限
-      cmax: maxAbs,  // カラースケールの上限
+      cmin: -maxAbs, cmax: maxAbs,
       colorscale: discreteColorscale,
       showscale: true,
       colorbar: { 
@@ -85,55 +123,61 @@
       contour: { show: false } 
     };
 
-    // 2. Surface (Z=0の境界線担当)
+    // Surface (Z=0の境界線)
     const contourTrace = {
       type: 'surface',
       x: res.matrix.x, y: res.matrix.y, z: res.matrix.z,
-      showscale: false, 
-      opacity: 1.0,
+      showscale: false, opacity: 1.0,
       surfacecolor: res.matrix.z, 
-      cmin: -maxAbs,
-      cmax: maxAbs,
+      cmin: -maxAbs, cmax: maxAbs,
       colorscale: discreteColorscale,
-      hidesurface: true, // 面自体は隠して、等高線だけを描画
-      
+      hidesurface: true, 
       contours: {
         z: {
-          show: true,
-          usecolormap: false,
-          project: { z: false }, // 空中に浮かせない
-          color: 'black',        // 境界線の色
-          width: 6,              // 線を太く強調
-          start: 0,              // 0 の位置だけに線を引く
-          end: 0,
-          size: 1
-        },
-        x: { show: false },
-        y: { show: false }
+          show: true, usecolormap: false, project: { z: false },
+          color: 'black', width: 6, start: 0, end: 0, size: 1
+        }
       },
       hoverinfo: 'skip'
     };
 
-    // 3. 基準面 (Z=0 の透明な氷の板)
+    // 基準面 (Z=0)
     const zeroPlane = {
       type: 'mesh3d',
       x: [0, 1, 0.5], y: [0, 0, 0.866], z: [0, 0, 0],
-      color: '#ffffff', opacity: 0.3, hoverinfo: 'skip'
+      color: '#ffffff', opacity: 0.2, hoverinfo: 'skip'
     };
 
-    const maxZ_plot = Math.max(maxZ, 0.5) + 0.5; // テキストが埋もれないように少し高くする
+    // アノテーション（ラベル）の高さ調整
+    const maxZ_plot = Math.max(maxZ, 0.5) + 0.5;
+
+    // Layout
     const layout = {
       title: `Ternary Phase Diagram (T=${temp}K, P=${press}bar)`,
-      uirevision: 'true', // カメラ固定（スライダーを動かしても視点がリセットされない）
+      uirevision: 'true', // カメラ固定
       scene: {
         aspectratio: {x: 1, y: 0.866, z: 0.6},
-        // ★ zaxis の指定方法を Plotly の最新仕様に修正
-        zaxis: { title: { text: '<b>ΔμsI - ΔμsII [kJ/mol]</b>' } },
+        // ★ Z軸の標準タイトルを削除
+        zaxis: { title: '' }, 
         xaxis: {visible: false}, yaxis: {visible: false},
         annotations: [
+          // 頂点ラベル
           { x: 0, y: 0, z: maxZ_plot, text: `A: ${gas_a}`, showarrow:false, font:{size:14, color:'black'}, bgcolor:'rgba(255,255,255,0.8)' },
           { x: 1, y: 0, z: maxZ_plot, text: `B: ${gas_b}`, showarrow:false, font:{size:14, color:'black'}, bgcolor:'rgba(255,255,255,0.8)' },
-          { x: 0.5, y: 0.866, z: maxZ_plot, text: `C: ${gas_c}`, showarrow:false, font:{size:14, color:'black'}, bgcolor:'rgba(255,255,255,0.8)' }
+          { x: 0.5, y: 0.866, z: maxZ_plot, text: `C: ${gas_c}`, showarrow:false, font:{size:14, color:'black'}, bgcolor:'rgba(255,255,255,0.8)' },
+          
+          // ★ Z軸ラベルのハック (頂点C付近の空中に、常に正しい向きで表示されるテキストを配置)
+          {
+            x: 0.45, y: 0.9, z: maxAbs / 2, // Z軸の横、高さの中央付近に配置
+            text: '<b>ΔμsI - ΔμsII [kJ/mol] ➡</b>', // 矢印を追加
+            textangle: -90, // 文字を縦にする (Plotlyのアノテーション角度は標準入力)
+            showarrow: false,
+            font: { size: 14, color: 'black' },
+            bgcolor: 'rgba(255,255,255,0.5)',
+            bordercolor: 'black',
+            borderwidth: 1,
+            borderpad: 4
+          }
         ]
       },
       margin: {t: 50, b: 0, l: 0, r: 0},
@@ -144,6 +188,7 @@
   }
 
   onMount(async () => {
+    // Plotlyの読み込み
     const mod = await import('plotly.js-dist-min');
     Plotly = mod.default;
     draw();
@@ -151,7 +196,7 @@
 </script>
 
 <main>
-  <h1>3成分系ハイドレートシミュレータ ver.1.1.2</h1>
+  <h1>3成分系ハイドレートシミュレータ ver.1.2.0</h1>
 
   <div class="controls">
     <div class="row">
@@ -182,15 +227,34 @@
       </div>
     </div>
 
-    <div class="info-box">
-      <h3>Δμ(sI) - Δμ(sII) の最大値</h3>
-      <div class="info-row">
-        <span><b>Max Value:</b> {maxInfo.val.toFixed(4)} kJ/mol</span>
+    <div class="info-box {analysisInfo.hasSynergy ? 'synergy-border' : ''}">
+      <div class="info-header">
+        <h3>Δμ(sI) - Δμ(sII) の最大安定度 解析</h3>
+        {#if analysisInfo.hasSynergy}
+          <span class="synergy-badge">🌟 シナジー効果を発見！</span>
+        {:else}
+          <span class="no-synergy-badge">2成分ブレンドが最適</span>
+        {/if}
       </div>
-      <div class="info-composition">
-        <span style="color: #d63031;">A: {(maxInfo.a * 100).toFixed(1)}%</span>
-        <span style="color: #0984e3;">B: {(maxInfo.b * 100).toFixed(1)}%</span>
-        <span style="color: #00b894;">C: {(maxInfo.c * 100).toFixed(1)}%</span>
+
+      <div class="info-main-row">
+        <div class="info-val-group">
+          <span class="label">3成分系最大値:</span>
+          <span class="value">{analysisInfo.maxZ.toFixed(4)} kJ/mol</span>
+        </div>
+        {#if analysisInfo.hasSynergy}
+          <div class="info-val-group synergy-text">
+            <span class="label">(2成分系より:</span>
+            <span class="value">+{analysisInfo.synergyIncrease.toFixed(1)}% 安定)</span>
+          </div>
+        {/if}
+      </div>
+
+      <div class="composition-title">🏆 最適組成比率</div>
+      <div class="info-composition centered">
+        <span style="color: #d63031;">A: {(analysisInfo.compA * 100).toFixed(1)}%</span>
+        <span style="color: #0984e3;">B: {(analysisInfo.compB * 100).toFixed(1)}%</span>
+        <span style="color: #00b894;">C: {(analysisInfo.compC * 100).toFixed(1)}%</span>
       </div>
     </div>
   </div>
@@ -226,12 +290,36 @@
   .number-input { width: 80px; padding: 6px; border: 1px solid #ccc; border-radius: 4px; text-align: right; font-size: 1rem; }
   input[type=range] { width: 100%; cursor: pointer; height: 6px; background: #ddd; border-radius: 5px; outline: none; -webkit-appearance: none; }
   
-  .info-box { background: #f8f9fa; padding: 15px 20px; border-radius: 8px; border-left: 5px solid #6c5ce7; }
-  /* ★ 大文字変換 (text-transform: uppercase;) を削除して μ が M になるバグを修正 */
-  .info-box h3 { margin: 0 0 10px 0; font-size: 1rem; color: #555; letter-spacing: 0.5px; }
-  .info-composition { display: flex; gap: 20px; margin-top: 5px; font-weight: bold; font-size: 1.1rem; }
+  /* 解析・シナジー判定ボックスのスタイル */
+  .info-box { background: #f8f9fa; padding: 15px 20px; border-radius: 8px; border-left: 5px solid #bdc3c7; transition: all 0.3s ease; }
+  .synergy-border { border-left: 5px solid #f1c40f; box-shadow: 0 0 10px rgba(241, 196, 15, 0.3); } /* シナジー発見時の強調 */
+  
+  .info-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; }
+  .info-box h3 { margin: 0; font-size: 0.9rem; color: #555; text-transform: uppercase; letter-spacing: 0.5px; }
+  
+  .synergy-badge { background: #f1c40f; color: #333; padding: 4px 8px; border-radius: 4px; font-size: 0.8rem; font-weight: bold; animation: pulse 2s infinite; }
+  .no-synergy-badge { background: #ecf0f1; color: #7f8c8d; padding: 4px 8px; border-radius: 4px; font-size: 0.8rem; }
+
+  .info-main-row { display: flex; gap: 15px; margin-bottom: 15px; align-items: baseline; }
+  .info-val-group { display: flex; gap: 8px; align-items: baseline; }
+  .info-val-group .label { font-size: 0.9rem; color: #7f8c8d; }
+  .info-val-group .value { font-size: 1.2rem; font-weight: bold; color: #2c3e50; }
+  .synergy-text { color: #f39c12; }
+  .synergy-text .value { font-size: 1rem; }
+
+  .composition-title { font-size: 0.8rem; color: #7f8c8d; text-align: center; margin-bottom: 5px; text-transform: uppercase; }
+  .info-composition { display: flex; gap: 20px; font-weight: bold; font-size: 1.1rem; }
+  
+  /* ★ 中央揃えのためのスタイル */
+  .centered { justify-content: center; }
 
   #myDiv { border-radius: 8px; overflow: hidden; border: 1px solid #eee; }
+
+  @keyframes pulse {
+    0% { box-shadow: 0 0 0 0 rgba(241, 196, 15, 0.4); }
+    70% { box-shadow: 0 0 0 10px rgba(241, 196, 15, 0); }
+    100% { box-shadow: 0 0 0 0 rgba(241, 196, 15, 0); }
+  }
 
   footer { margin-top: 40px; text-align: right; color: #aaa; font-size: 0.9rem; border-top: 1px solid #eee; padding-top: 10px; }
 </style>
