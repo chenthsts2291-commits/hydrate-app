@@ -150,7 +150,7 @@
 </script>
 
 <main>
-  <h1>3成分系ハイドレート 相図シミュレータ</h1>
+  <h1>3成分系ハイドレートシミュレータ ver.1.1.1</h1>
 
   <div class="controls">
     <div class="row">
@@ -182,12 +182,9 @@
     </div>
 
     <div class="info-box">
-      <h3>📊 ΔμsI - ΔμsII の最大値 (最適ブレンド)</h3>
+      <h3>Δμ(sI) - Δμ(sII) の最大値</h3>
       <div class="info-row">
         <span><b>Max Value:</b> {maxInfo.val.toFixed(4)} kJ/mol</span>
-        <span style="margin-left: 15px; font-weight: bold; color: {maxInfo.val > 0 ? '#FF8C00' : '#008080'};">
-          ({maxInfo.val > 0 ? 'sII 構造が支配的' : 'sI 構造が支配的'})
-        </span>
       </div>
       <div class="info-composition">
         <span style="color: #d63031;">A: {(maxInfo.a * 100).toFixed(1)}%</span>
