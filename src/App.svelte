@@ -18,10 +18,10 @@
   let showSearchModal = false;
   let searchMode = 'gases';
   let isSearching = false;
-  let hasSearched = false; 
+  let hasSearched = false; // ★ 検索を一度でも実行したかを判定するフラグを追加
   let searchResults = [];
 
-  let s_gas_a = "Ne", s_gas_b = "Xe", s_gas_c = "Methane"; // ★ 提案にあった「試す価値あり」の初期値に変更
+  let s_gas_a = "Ne", s_gas_b = "Ar", s_gas_c = "Kr";
   let s_temp = 273.15, s_press = 50.0;
 
   const EPSILON = 0.005;
@@ -41,16 +41,13 @@
   }
 
   // ==========================================
-  // ★ 検索ロジック (デバッグログ出力追加)
+  // ★ 検索ロジック
   // ==========================================
   async function runAdvancedSearch() {
     isSearching = true;
-    hasSearched = false; 
+    hasSearched = false; // 検索開始時にリセット
     searchResults = [];
     await new Promise(resolve => setTimeout(resolve, 50));
-
-    // ★ デバッグ開始の合図
-    console.log(`\n=== 🔍 シナジー探索開始 (${searchMode}) ===`);
 
     const N = available_gases.length;
 
@@ -110,11 +107,6 @@
 
       const maxC = calcComp(locMax.idx, res);
 
-      // ★ 提案のデバッグログ出力を追加 (内部がエッジの -0.01 kJ/mol 以内に迫った惜しいパターンをログ化)
-      if (locMax.val > mBinMax - 0.01) {
-        console.log(`[惜しい!] ${g1}+${g2}+${g3} T=${t}K P=${p}bar: 3成分最大=${locMax.val.toFixed(4)}, エッジ最大=${mBinMax.toFixed(4)}, 差分=${(locMax.val - mBinMax).toFixed(4)} kJ/mol`);
-      }
-
       if (maxC.a > EPSILON && maxC.b > EPSILON && maxC.c > EPSILON && locMax.val > mBinMax + 0.0001) {
         const fineRes = calculateTernaryEnergySurface(g1, g2, g3, p, t, 100);
         let fMax = -Infinity, fMaxIdx = -1;
@@ -131,14 +123,12 @@
         if (fC.a > EPSILON && fC.b > EPSILON && fC.c > EPSILON && fMax > exactBinMax + 0.0001) {
           const compStr = `${g1}:${(fC.a*100).toFixed(1)}%  ${g2}:${(fC.b*100).toFixed(1)}%  ${g3}:${(fC.c*100).toFixed(1)}%`;
           searchResults.push({ temp: t, press: p, gases: [g1, g2, g3], comp: compStr });
-          console.log(`>>> 🎉 真のシナジー発見! ${compStr}`);
         }
       }
     }
 
-    console.log(`=== 🏁 探索終了 ===\n`);
     isSearching = false;
-    hasSearched = true; 
+    hasSearched = true; // ★ 計算完了フラグを立てる
   }
 
   function applyResultToMain(result) {
@@ -242,11 +232,11 @@
 </script>
 
 <main>
-  <h1>3成分系ハイドレート探索AI ver.3.3.0 (デバッグ機能搭載)</h1>
+  <h1>3成分系ハイドレート探索 ver.1.2.0</h1>
 
   <div class="action-row" style="margin-bottom: 25px;">
     <button class="discover-btn" on:click={() => { showSearchModal = true; searchResults = []; hasSearched = false; }}>
-      🔍 高度なシナジー検索ツールを開く
+      🔍 シナジー検索
     </button>
   </div>
 
@@ -291,7 +281,7 @@
         <span><b>Max Value:</b> {analysisMax.val.toFixed(4)} kJ/mol</span>
         <span style="margin-left: 15px; font-weight: bold; color: {analysisMax.hasSynergy ? '#d35400' : '#7f8c8d'};">
           {#if !analysisMax.hasSynergy}
-            (シナジーなし: エッジ上の2成分で十分)
+            (シナジーなし: 2成分で十分)
           {/if}
         </span>
       </div>
@@ -315,7 +305,7 @@
   <div class="modal-overlay">
     <div class="modal-content">
       <div class="modal-header">
-        <h2>🔍 高度なシナジー検索ツール (sII特化)</h2>
+        <h2>🔍 シナジー検索ツール</h2>
         <button class="close-btn" on:click={() => showSearchModal = false}>✕</button>
       </div>
 
@@ -330,14 +320,14 @@
 
       <div class="search-inputs">
         {#if searchMode === 'gases'}
-          <p class="search-desc">指定した3つのガスにおいて、sII構造の確実なシナジーが発現する温度・圧力を探索します。<br><span style="color:#d63031;">※ブラウザの「開発者ツール(F12) > Console」を開くと、惜しい組み合わせのログが見られます。</span></p>
+          <p class="search-desc">指定した3つのガスにおいて、sIIにおけるシナジーが発現する温度・圧力を探索します。</p>
           <div class="row">
             <select bind:value={s_gas_a} on:change={() => hasSearched = false}> {#each available_gases as g}<option>{g}</option>{/each} </select>
             <select bind:value={s_gas_b} on:change={() => hasSearched = false}> {#each available_gases as g}<option>{g}</option>{/each} </select>
             <select bind:value={s_gas_c} on:change={() => hasSearched = false}> {#each available_gases as g}<option>{g}</option>{/each} </select>
           </div>
         {:else}
-          <p class="search-desc">指定した温度・圧力において、全ガス組み合わせの中からsIIシナジーを発現するものを探索します。<br><span style="color:#d63031;">※ブラウザの「開発者ツール(F12) > Console」を開くと、惜しい組み合わせのログが見られます。</span></p>
+          <p class="search-desc">指定した温度・圧力において、全ガス組み合わせの中からsIIにおけるシナジーを発現するものを探索します。</p>
           <div class="row" style="gap: 30px; justify-content: center;">
             <label>温度 (K): <input type="number" bind:value={s_temp} style="width: 100px; padding: 5px;" on:input={() => hasSearched = false}></label>
             <label>圧力 (bar): <input type="number" bind:value={s_press} style="width: 100px; padding: 5px;" on:input={() => hasSearched = false}></label>
@@ -346,14 +336,14 @@
       </div>
 
       <button class="run-search-btn" on:click={runAdvancedSearch} disabled={isSearching}>
-        {isSearching ? '⏳ sIIシナジーを総当たり計算中...' : '🚀 検索を実行する'}
+        {isSearching ? '⏳ 総当たり計算中...' : '🚀 検索を実行する'}
       </button>
 
       <div class="search-results">
         {#if isSearching}
           <div class="loading-text">計算しています。数十秒かかる場合があります...</div>
         {:else if searchResults.length > 0}
-          <h4>🎯 発見された完全な3成分シナジー条件 ({searchResults.length} 件)</h4>
+          <h4>🎯 発見された3成分 ({searchResults.length} 件)</h4>
           <ul class="result-list">
             {#each searchResults as res}
               <li class="result-item">
@@ -369,7 +359,7 @@
         {:else if hasSearched}
           <div class="no-results-text">
             <h3>⚠️ 該当しませんでした</h3>
-            <p>指定された条件で全パターンを厳格に計算しましたが、3つのガスが全て必要となる「3成分シナジー効果」は存在しませんでした。<br>（いずれかの2成分系ブレンドが最強となります）</p>
+            <p>指定された条件で全パターンを計算しましたが、「3成分シナジー効果」は存在しませんでした。<br>（いずれかの2成分系ブレンドが最強となります）</p>
           </div>
         {:else}
           <div class="loading-text" style="color: #7f8c8d;">
@@ -460,6 +450,7 @@
   .search-results h4 { margin: 0 0 15px 0; color: #2c3e50; }
   .loading-text { text-align: center; margin-top: 20px; font-weight: bold; color: #e67e22; }
   
+  /* ★ 該当しなかった場合の専用スタイル */
   .no-results-text {
     background: #fff5f5; border-left: 5px solid #ff7675; padding: 15px 20px;
     border-radius: 8px; margin-top: 10px; text-align: center;
