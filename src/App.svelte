@@ -1,6 +1,6 @@
 <script>
   import { onMount } from 'svelte';
-  import { calculateTernaryEnergySurface, inter } from './vdwp_core.js';
+  import { calculateTernaryEnergySurface, calculateStability, inter } from './vdwp_core.js';
 
   // --- 初期設定 ---
   let temp = 273.15;
@@ -20,140 +20,152 @@
   // ★ シナジー検索ツール用の変数と状態
   // ==========================================
   let showSearchModal = false;
-  let searchMode = 'gases'; // 'gases' (3成分から検索) or 'pt' (圧力温度から検索)
+  let searchMode = 'gases'; // 'gases' or 'pt'
   let isSearching = false;
   let searchResults = [];
 
-  // モード1 (3成分から検索) 用の入力
   let s_gas_a = "Methane", s_gas_b = "Ethane", s_gas_c = "CF4";
-  
-  // モード2 (圧力温度から検索) 用の入力
   let s_temp = 273.15, s_press = 50.0;
 
-  // 0%判定の閾値 (0.5% 以上含まれていれば「成分が存在する」とみなす)
   const EPSILON = 0.005;
 
   // ==========================================
-  // ★ 検索ロジック
+  // ★ 補助関数: 2成分系の最大値(sII)と最小値(sI)
+  // ==========================================
+  function getBinaryMax(name1, name2, P, T, steps = 100) {
+    let maxBinary = -Infinity;
+    for (let i = 0; i <= steps; i++) {
+      const frac1 = i / steps;
+      const diff = calculateStability(name1, name2, frac1, 1.0 - frac1, P, T);
+      if (diff !== null && diff > maxBinary) maxBinary = diff;
+    }
+    return maxBinary;
+  }
+
+  function getBinaryMin(name1, name2, P, T, steps = 100) {
+    let minBinary = Infinity;
+    for (let i = 0; i <= steps; i++) {
+      const frac1 = i / steps;
+      const diff = calculateStability(name1, name2, frac1, 1.0 - frac1, P, T);
+      if (diff !== null && diff < minBinary) minBinary = diff;
+    }
+    return minBinary;
+  }
+
+  // ==========================================
+  // ★ 検索ロジック (偽陽性を防ぐ完全版)
   // ==========================================
   async function runAdvancedSearch() {
     isSearching = true;
     searchResults = [];
-    // UIを更新して「検索中...」を表示させるために少し待機
     await new Promise(resolve => setTimeout(resolve, 50));
 
-    if (searchMode === 'gases') {
-      // --- モード1: 指定した3成分で、シナジーが出る温度・圧力を探す ---
-      // 温度(K): 200〜300まで 5刻み, 圧力(bar): 10〜200まで 10刻み
-      const targetGases = [s_gas_a, s_gas_b, s_gas_c];
-      
-      for (let t = 200; t <= 300; t += 5) {
-        for (let p = 10; p <= 200; p += 10) {
-          const res = calculateTernaryEnergySurface(targetGases[0], targetGases[1], targetGases[2], p, t, 12); // 粗いグリッド(n=12)で高速計算
-          let locMax = { val: -Infinity, idx: -1 };
-          let locMin = { val: Infinity, idx: -1 };
-          
-          for (let i = 0; i < res.flat.z.length; i++) {
-            const z = res.flat.z[i];
-            if (z !== null) {
-              if (z > locMax.val) locMax = { val: z, idx: i };
-              if (z < locMin.val) locMin = { val: z, idx: i };
-            }
-          }
+    const N = available_gases.length;
 
-          let foundSynergy = false;
-          let synergyType = "";
-          let compStr = "";
-
-          // 最大値(sII)のシナジー判定
-          const calcComp = (idx) => {
-            const px = res.flat.x[idx];
-            const py = res.flat.y[idx];
-            const c = py / 0.866025;
-            const b = px - 0.5 * c;
-            return { a: Math.max(0, 1.0 - b - c), b: Math.max(0, b), c: Math.max(0, c) };
-          };
-
-          const maxC = calcComp(locMax.idx);
-          if (maxC.a > EPSILON && maxC.b > EPSILON && maxC.c > EPSILON) {
-            foundSynergy = true; synergyType = "sII優位";
-            compStr = `A:${(maxC.a*100).toFixed(0)}% B:${(maxC.b*100).toFixed(0)}% C:${(maxC.c*100).toFixed(0)}%`;
-          }
-
-          const minC = calcComp(locMin.idx);
-          if (!foundSynergy && minC.a > EPSILON && minC.b > EPSILON && minC.c > EPSILON) {
-            foundSynergy = true; synergyType = "sI優位";
-            compStr = `A:${(minC.a*100).toFixed(0)}% B:${(minC.b*100).toFixed(0)}% C:${(minC.c*100).toFixed(0)}%`;
-          }
-
-          if (foundSynergy) {
-            searchResults.push({ temp: t, press: p, gases: targetGases, type: synergyType, comp: compStr });
-          }
+    // 全ガス走査時の高速化キャッシュ
+    let binMaxCache = {};
+    let binMinCache = {};
+    if (searchMode === 'pt') {
+      for (let i = 0; i < N; i++) {
+        for (let j = i + 1; j < N; j++) {
+           const g1 = available_gases[i], g2 = available_gases[j];
+           const key = [g1, g2].sort().join('-');
+           binMaxCache[key] = getBinaryMax(g1, g2, s_press, s_temp, 30);
+           binMinCache[key] = getBinaryMin(g1, g2, s_press, s_temp, 30);
         }
       }
-    } 
-    else {
-      // --- モード2: 指定した温度・圧力で、シナジーが出る3成分を探す ---
-      const N = available_gases.length;
+    }
+
+    const getCachedMax = (g1, g2, p, t) => {
+      if (searchMode === 'pt') return binMaxCache[[g1, g2].sort().join('-')];
+      return getBinaryMax(g1, g2, p, t, 30);
+    };
+    const getCachedMin = (g1, g2, p, t) => {
+      if (searchMode === 'pt') return binMinCache[[g1, g2].sort().join('-')];
+      return getBinaryMin(g1, g2, p, t, 30);
+    };
+
+    if (searchMode === 'gases') {
+      const targetGases = [s_gas_a, s_gas_b, s_gas_c];
+      for (let t = 200; t <= 300; t += 5) {
+        for (let p = 10; p <= 200; p += 10) {
+          evaluateSynergyForSearch(targetGases[0], targetGases[1], targetGases[2], p, t);
+        }
+      }
+    } else {
       for (let i = 0; i < N; i++) {
         for (let j = i + 1; j < N; j++) {
           for (let k = j + 1; k < N; k++) {
-            const g1 = available_gases[i], g2 = available_gases[j], g3 = available_gases[k];
-            const res = calculateTernaryEnergySurface(g1, g2, g3, s_press, s_temp, 12);
-            
-            let locMax = { val: -Infinity, idx: -1 };
-            let locMin = { val: Infinity, idx: -1 };
-            for (let p = 0; p < res.flat.z.length; p++) {
-              if (res.flat.z[p] !== null) {
-                if (res.flat.z[p] > locMax.val) locMax = { val: res.flat.z[p], idx: p };
-                if (res.flat.z[p] < locMin.val) locMin = { val: res.flat.z[p], idx: p };
-              }
-            }
-
-            const calcComp = (idx) => {
-              const px = res.flat.x[idx];
-              const py = res.flat.y[idx];
-              const c = py / 0.866025;
-              const b = px - 0.5 * c;
-              return { a: Math.max(0, 1.0 - b - c), b: Math.max(0, b), c: Math.max(0, c) };
-            };
-
-            let foundSynergy = false;
-            let synergyType = "";
-            let compStr = "";
-
-            const maxC = calcComp(locMax.idx);
-            if (maxC.a > EPSILON && maxC.b > EPSILON && maxC.c > EPSILON) {
-              foundSynergy = true; synergyType = "sII優位";
-              compStr = `${g1}:${(maxC.a*100).toFixed(0)}% ${g2}:${(maxC.b*100).toFixed(0)}% ${g3}:${(maxC.c*100).toFixed(0)}%`;
-            }
-
-            const minC = calcComp(locMin.idx);
-            if (!foundSynergy && minC.a > EPSILON && minC.b > EPSILON && minC.c > EPSILON) {
-              foundSynergy = true; synergyType = "sI優位";
-              compStr = `${g1}:${(minC.a*100).toFixed(0)}% ${g2}:${(minC.b*100).toFixed(0)}% ${g3}:${(minC.c*100).toFixed(0)}%`;
-            }
-
-            if (foundSynergy) {
-              searchResults.push({ temp: s_temp, press: s_press, gases: [g1, g2, g3], type: synergyType, comp: compStr });
-            }
+            evaluateSynergyForSearch(available_gases[i], available_gases[j], available_gases[k], s_press, s_temp);
           }
         }
+      }
+    }
+
+    function evaluateSynergyForSearch(g1, g2, g3, p, t) {
+      // 2成分の限界値を計算
+      const mAB_max = getCachedMax(g1, g2, p, t);
+      const mBC_max = getCachedMax(g2, g3, p, t);
+      const mCA_max = getCachedMax(g1, g3, p, t);
+      const mBinMax = Math.max(mAB_max, mBC_max, mCA_max);
+
+      const mAB_min = getCachedMin(g1, g2, p, t);
+      const mBC_min = getCachedMin(g2, g3, p, t);
+      const mCA_min = getCachedMin(g1, g3, p, t);
+      const mBinMin = Math.min(mAB_min, mBC_min, mCA_min);
+
+      const res = calculateTernaryEnergySurface(g1, g2, g3, p, t, 15);
+      
+      let locMax = { val: -Infinity, idx: -1 };
+      let locMin = { val: Infinity, idx: -1 };
+      for (let idx = 0; idx < res.flat.z.length; idx++) {
+        const z = res.flat.z[idx];
+        if (z !== null) {
+          if (z > locMax.val) locMax = { val: z, idx };
+          if (z < locMin.val) locMin = { val: z, idx };
+        }
+      }
+
+      const calcComp = (idx) => {
+        const px = res.flat.x[idx];
+        const py = res.flat.y[idx];
+        const c = py / 0.866025;
+        const b = px - 0.5 * c;
+        return { a: Math.max(0, 1.0 - b - c), b: Math.max(0, b), c: Math.max(0, c) };
+      };
+
+      let foundSynergy = false;
+      let synergyType = "";
+      let compStr = "";
+
+      const maxC = calcComp(locMax.idx);
+      const minC = calcComp(locMin.idx);
+
+      // ★ 偽陽性防止：組成が内側(>0)であり、かつエネルギーがエッジを確実に上回る(下回る)こと！
+      if (maxC.a > EPSILON && maxC.b > EPSILON && maxC.c > EPSILON && locMax.val > mBinMax + 0.001) {
+        foundSynergy = true; synergyType = "sII優位";
+        compStr = `${g1}:${(maxC.a*100).toFixed(0)}% ${g2}:${(maxC.b*100).toFixed(0)}% ${g3}:${(maxC.c*100).toFixed(0)}%`;
+      } else if (minC.a > EPSILON && minC.b > EPSILON && minC.c > EPSILON && locMin.val < mBinMin - 0.001) {
+        foundSynergy = true; synergyType = "sI優位";
+        compStr = `${g1}:${(minC.a*100).toFixed(0)}% ${g2}:${(minC.b*100).toFixed(0)}% ${g3}:${(minC.c*100).toFixed(0)}%`;
+      }
+
+      if (foundSynergy) {
+        searchResults.push({ temp: t, press: p, gases: [g1, g2, g3], type: synergyType, comp: compStr });
       }
     }
 
     isSearching = false;
   }
 
-  // 検索結果をクリックしてメイン画面に反映する関数
   function applyResultToMain(result) {
     gas_a = result.gases[0];
     gas_b = result.gases[1];
     gas_c = result.gases[2];
     temp = result.temp;
     press = result.press;
-    showSearchModal = false; // モーダルを閉じる
-    draw(); // メイン画面の再描画
+    showSearchModal = false;
+    draw();
   }
 
   // ==========================================
@@ -172,125 +184,70 @@
     for (let i = 0; i < res.flat.z.length; i++) {
       const z = res.flat.z[i];
       if (z !== null) {
-        if (z > maxZ) {
-          maxZ = z;
-          maxIdx = i;
-        }
-        if (z < minZ) {
-          minZ = z;
-          minIdx = i;
-        }
+        if (z > maxZ) { maxZ = z; maxIdx = i; }
+        if (z < minZ) { minZ = z; minIdx = i; }
       }
     }
 
-    const maxAbs = Math.max(Math.abs(maxZ), Math.abs(minZ), 0.1); 
+    // 2成分の限界値を精密に計算
+    const maxBinary = Math.max(getBinaryMax(gas_a, gas_b, press, temp), getBinaryMax(gas_b, gas_c, press, temp), getBinaryMax(gas_c, gas_a, press, temp));
+    const minBinary = Math.min(getBinaryMin(gas_a, gas_b, press, temp), getBinaryMin(gas_b, gas_c, press, temp), getBinaryMin(gas_c, gas_a, press, temp));
 
-    const discreteColorscale = [
-      [0.0, '#008080'], 
-      [0.5, '#008080'], 
-      [0.5, '#FF8C00'], 
-      [1.0, '#FF8C00']  
-    ];
+    const maxAbs = Math.max(Math.abs(maxZ), Math.abs(minZ), 0.1); 
+    const discreteColorscale = [ [0.0, '#008080'], [0.5, '#008080'], [0.5, '#FF8C00'], [1.0, '#FF8C00'] ];
 
     if (maxIdx !== -1) {
-      const px = res.flat.x[maxIdx];
-      const py = res.flat.y[maxIdx];
-      const c = py / 0.866025;
-      const b = px - 0.5 * c;
-      const a = 1.0 - b - c;
-
-      const compA = Math.max(0, a);
-      const compB = Math.max(0, b);
-      const compC = Math.max(0, c);
+      const px = res.flat.x[maxIdx]; const py = res.flat.y[maxIdx];
+      const c = py / 0.866025; const b = px - 0.5 * c; const a = 1.0 - b - c;
+      const compA = Math.max(0, a); const compB = Math.max(0, b); const compC = Math.max(0, c);
       
-      const hasSynergyMax = compA > EPSILON && compB > EPSILON && compC > EPSILON;
+      // ★ 厳格なシナジー判定（組成＆エネルギーのダブルチェック）
+      const hasSynergyMax = compA > EPSILON && compB > EPSILON && compC > EPSILON && (maxZ > maxBinary + 0.0005);
 
-      analysisMax = { 
-        val: maxZ, 
-        a: compA, b: compB, c: compC,
-        hasSynergy: hasSynergyMax
-      };
+      analysisMax = { val: maxZ, a: compA, b: compB, c: compC, hasSynergy: hasSynergyMax };
     }
 
     if (minIdx !== -1) {
-      const px = res.flat.x[minIdx];
-      const py = res.flat.y[minIdx];
-      const c = py / 0.866025;
-      const b = px - 0.5 * c;
-      const a = 1.0 - b - c;
+      const px = res.flat.x[minIdx]; const py = res.flat.y[minIdx];
+      const c = py / 0.866025; const b = px - 0.5 * c; const a = 1.0 - b - c;
+      const compA = Math.max(0, a); const compB = Math.max(0, b); const compC = Math.max(0, c);
 
-      const compA = Math.max(0, a);
-      const compB = Math.max(0, b);
-      const compC = Math.max(0, c);
+      // ★ 厳格なシナジー判定（組成＆エネルギーのダブルチェック）
+      const hasSynergyMin = compA > EPSILON && compB > EPSILON && compC > EPSILON && (minZ < minBinary - 0.0005);
 
-      const hasSynergyMin = compA > EPSILON && compB > EPSILON && compC > EPSILON;
-
-      analysisMin = { 
-        val: minZ, 
-        a: compA, b: compB, c: compC,
-        hasSynergy: hasSynergyMin
-      };
+      analysisMin = { val: minZ, a: compA, b: compB, c: compC, hasSynergy: hasSynergyMin };
     }
 
     const meshTrace = {
-      type: 'mesh3d',
-      x: res.flat.x, y: res.flat.y, z: res.flat.z,
-      intensity: res.flat.z, 
-      cmin: -maxAbs, cmax: maxAbs,  
-      colorscale: discreteColorscale,
-      showscale: true,
-      colorbar: { 
-        title: '<b>構造</b>',
-        tickvals: [-maxAbs/2, maxAbs/2],
-        ticktext: ['sI安定', 'sII安定']
-      },
-      hovertemplate: 'ΔμsI - ΔμsII: %{z:.3f} kJ/mol<extra></extra>',
-      contour: { show: false } 
+      type: 'mesh3d', x: res.flat.x, y: res.flat.y, z: res.flat.z,
+      intensity: res.flat.z, cmin: -maxAbs, cmax: maxAbs, colorscale: discreteColorscale,
+      showscale: true, colorbar: { title: '<b>構造</b>', tickvals: [-maxAbs/2, maxAbs/2], ticktext: ['sI安定', 'sII安定'] },
+      hovertemplate: 'ΔμsI - ΔμsII: %{z:.3f} kJ/mol<extra></extra>', contour: { show: false } 
     };
 
     const contourTrace = {
-      type: 'surface',
-      x: res.matrix.x, y: res.matrix.y, z: res.matrix.z,
-      showscale: false, opacity: 1.0,
-      surfacecolor: res.matrix.z, 
-      cmin: -maxAbs, cmax: maxAbs,
-      colorscale: discreteColorscale,
-      hidesurface: true, 
-      contours: {
-        z: {
-          show: true, usecolormap: false, project: { z: false }, 
-          color: 'black', width: 6, start: 0, end: 0, size: 1
-        },
-        x: { show: false }, y: { show: false }
-      },
+      type: 'surface', x: res.matrix.x, y: res.matrix.y, z: res.matrix.z,
+      showscale: false, opacity: 1.0, surfacecolor: res.matrix.z, cmin: -maxAbs, cmax: maxAbs,
+      colorscale: discreteColorscale, hidesurface: true, 
+      contours: { z: { show: true, usecolormap: false, project: { z: false }, color: 'black', width: 6, start: 0, end: 0, size: 1 }, x: { show: false }, y: { show: false } },
       hoverinfo: 'skip'
     };
 
-    const zeroPlane = {
-      type: 'mesh3d',
-      x: [0, 1, 0.5], y: [0, 0, 0.866], z: [0, 0, 0],
-      color: '#ffffff', opacity: 0.3, hoverinfo: 'skip'
-    };
+    const zeroPlane = { type: 'mesh3d', x: [0, 1, 0.5], y: [0, 0, 0.866], z: [0, 0, 0], color: '#ffffff', opacity: 0.3, hoverinfo: 'skip' };
 
     const maxZ_plot = Math.max(maxZ, 0.5) + 0.5; 
-    
     const layout = {
-      title: `Ternary Phase Diagram (T=${temp}K, P=${press}bar)`,
-      uirevision: 'true', 
+      title: `Ternary Phase Diagram (T=${temp}K, P=${press}bar)`, uirevision: 'true', 
       scene: {
         aspectratio: {x: 1, y: 0.866, z: 0.6},
-        zaxis: { 
-          title: { text: '<b>ΔμsI - ΔμsII<br>[kJ/mol]</b>', font: {size: 13, color: '#333'} } 
-        },
+        zaxis: { title: { text: '<b>ΔμsI - ΔμsII<br>[kJ/mol]</b>', font: {size: 13, color: '#333'} } },
         xaxis: {visible: false}, yaxis: {visible: false},
         annotations: [
           { x: 0, y: 0, z: maxZ_plot, text: `A: ${gas_a}`, showarrow:false, font:{size:14, color:'black'}, bgcolor:'rgba(255,255,255,0.8)' },
           { x: 1, y: 0, z: maxZ_plot, text: `B: ${gas_b}`, showarrow:false, font:{size:14, color:'black'}, bgcolor:'rgba(255,255,255,0.8)' },
           { x: 0.5, y: 0.866, z: maxZ_plot, text: `C: ${gas_c}`, showarrow:false, font:{size:14, color:'black'}, bgcolor:'rgba(255,255,255,0.8)' }
         ]
-      },
-      margin: {t: 50, b: 0, l: 0, r: 0},
-      height: 600
+      }, margin: {t: 50, b: 0, l: 0, r: 0}, height: 600
     };
 
     Plotly.react('myDiv', [meshTrace, contourTrace, zeroPlane], layout);
@@ -304,7 +261,7 @@
 </script>
 
 <main>
-  <h1>3成分系ハイドレート探索AI ver.2.0.0</h1>
+  <h1>3成分系ハイドレート探索AI ver.2.1.0</h1>
 
   <div class="action-row" style="margin-bottom: 25px;">
     <button class="discover-btn" on:click={() => { showSearchModal = true; searchResults = []; }}>
@@ -416,14 +373,14 @@
 
       <div class="search-inputs">
         {#if searchMode === 'gases'}
-          <p class="search-desc">指定した3つのガスにおいて、シナジーが発現する温度(200~300K)・圧力(10~200bar)を探索します。</p>
+          <p class="search-desc">指定した3つのガスにおいて、確実なシナジーが発現する温度(200~300K)・圧力(10~200bar)を探索します。</p>
           <div class="row">
             <select bind:value={s_gas_a}> {#each available_gases as g}<option>{g}</option>{/each} </select>
             <select bind:value={s_gas_b}> {#each available_gases as g}<option>{g}</option>{/each} </select>
             <select bind:value={s_gas_c}> {#each available_gases as g}<option>{g}</option>{/each} </select>
           </div>
         {:else}
-          <p class="search-desc">指定した温度・圧力において、2600通り以上の全ガス組み合わせの中からシナジーを発現するものを探索します。</p>
+          <p class="search-desc">指定した温度・圧力において、全ガス組み合わせの中から確実なシナジーを発現するものを探索します。</p>
           <div class="row" style="gap: 30px; justify-content: center;">
             <label>温度 (K): <input type="number" bind:value={s_temp} style="width: 100px; padding: 5px;"></label>
             <label>圧力 (bar): <input type="number" bind:value={s_press} style="width: 100px; padding: 5px;"></label>
@@ -432,14 +389,14 @@
       </div>
 
       <button class="run-search-btn" on:click={runAdvancedSearch} disabled={isSearching}>
-        {isSearching ? '⏳ 膨大なパターンを総当たり計算中...' : '🚀 検索を実行する'}
+        {isSearching ? '⏳ 厳格な熱力学フィルターで総当たり計算中...' : '🚀 検索を実行する'}
       </button>
 
       <div class="search-results">
         {#if isSearching}
           <div class="loading-text">計算しています。数秒お待ちください...</div>
         {:else if searchResults.length > 0}
-          <h4>🎯 発見されたシナジー条件 ({searchResults.length} 件)</h4>
+          <h4>🎯 発見された完全な3成分シナジー条件 ({searchResults.length} 件)</h4>
           <ul class="result-list">
             {#each searchResults as res}
               <li class="result-item">
@@ -510,9 +467,7 @@
   #myDiv { border-radius: 8px; overflow: hidden; border: 1px solid #eee; }
   footer { margin-top: 40px; text-align: right; color: #aaa; font-size: 0.9rem; border-top: 1px solid #eee; padding-top: 10px; }
 
-  /* ========================================== */
-  /* ★ モーダル用 CSS */
-  /* ========================================== */
+  /* モーダル用 CSS */
   .modal-overlay {
     position: fixed; top: 0; left: 0; width: 100vw; height: 100vh;
     background: rgba(0,0,0,0.6); display: flex; justify-content: center; align-items: center; z-index: 1000;
