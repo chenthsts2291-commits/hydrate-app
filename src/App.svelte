@@ -1,6 +1,6 @@
 <script>
   import { onMount } from 'svelte';
-  import { calculateTernaryEnergySurface, calculateStability, inter } from './vdwp_core.js';
+  import { calculateTernaryEnergySurface, inter } from './vdwp_core.js';
 
   // --- 初期設定 ---
   let temp = 273.15;
@@ -11,94 +11,154 @@
   let gas_b = "Ethane";
   let gas_c = "CF4";
 
-  // ★ 最大値用・最小値用の情報を格納
   let analysisMax = { val: 0, a: 0, b: 0, c: 0, hasSynergy: false };
   let analysisMin = { val: 0, a: 0, b: 0, c: 0, hasSynergy: false };
   
-  let isSearching = false; 
-
   let Plotly;
 
-  // 2成分系の最大安定度(sII方向)を計算する補助関数
-  function getBinaryMax(name1, name2, P, T, steps = 100) {
-    let maxBinary = -Infinity;
-    for (let i = 0; i <= steps; i++) {
-      const frac1 = i / steps;
-      const frac2 = 1.0 - frac1;
-      const diff = calculateStability(name1, name2, frac1, frac2, P, T);
-      if (diff !== null && diff > maxBinary) {
-        maxBinary = diff;
-      }
-    }
-    return maxBinary;
-  }
+  // ==========================================
+  // ★ シナジー検索ツール用の変数と状態
+  // ==========================================
+  let showSearchModal = false;
+  let searchMode = 'gases'; // 'gases' (3成分から検索) or 'pt' (圧力温度から検索)
+  let isSearching = false;
+  let searchResults = [];
 
-  // 探索機能: sII方向へ強いシナジー（内部にピークを持つ）組み合わせを探す
-  async function discoverSynergy() {
-    if (isSearching) return;
+  // モード1 (3成分から検索) 用の入力
+  let s_gas_a = "Methane", s_gas_b = "Ethane", s_gas_c = "CF4";
+  
+  // モード2 (圧力温度から検索) 用の入力
+  let s_temp = 273.15, s_press = 50.0;
+
+  // 0%判定の閾値 (0.5% 以上含まれていれば「成分が存在する」とみなす)
+  const EPSILON = 0.005;
+
+  // ==========================================
+  // ★ 検索ロジック
+  // ==========================================
+  async function runAdvancedSearch() {
     isSearching = true;
-
+    searchResults = [];
+    // UIを更新して「検索中...」を表示させるために少し待機
     await new Promise(resolve => setTimeout(resolve, 50));
 
-    let bestSynergyDiff = -Infinity;
-    let bestCombo = null;
-    const N = available_gases.length;
-
-    const binaryCache = {};
-    for(let i = 0; i < N; i++){
-      for(let j = i + 1; j < N; j++){
-        const g1 = available_gases[i];
-        const g2 = available_gases[j];
-        binaryCache[`${g1}-${g2}`] = getBinaryMax(g1, g2, press, temp, 20);
-      }
-    }
-
-    const getBin = (g1, g2) => {
-      if(g1 > g2) [g1, g2] = [g2, g1];
-      return binaryCache[`${g1}-${g2}`];
-    };
-
-    for(let i = 0; i < N; i++){
-      for(let j = i + 1; j < N; j++){
-        for(let k = j + 1; k < N; k++){
-          const g1 = available_gases[i];
-          const g2 = available_gases[j];
-          const g3 = available_gases[k];
-
-          const mAB = getBin(g1, g2);
-          const mBC = getBin(g2, g3);
-          const mCA = getBin(g1, g3);
-          const mBinMax = Math.max(mAB, mBC, mCA);
-
-          const res = calculateTernaryEnergySurface(g1, g2, g3, press, temp, 12);
-          let tempMaxZ = -Infinity;
-          for (let p = 0; p < res.flat.z.length; p++) {
-            if (res.flat.z[p] !== null && res.flat.z[p] > tempMaxZ) {
-              tempMaxZ = res.flat.z[p];
+    if (searchMode === 'gases') {
+      // --- モード1: 指定した3成分で、シナジーが出る温度・圧力を探す ---
+      // 温度(K): 200〜300まで 5刻み, 圧力(bar): 10〜200まで 10刻み
+      const targetGases = [s_gas_a, s_gas_b, s_gas_c];
+      
+      for (let t = 200; t <= 300; t += 5) {
+        for (let p = 10; p <= 200; p += 10) {
+          const res = calculateTernaryEnergySurface(targetGases[0], targetGases[1], targetGases[2], p, t, 12); // 粗いグリッド(n=12)で高速計算
+          let locMax = { val: -Infinity, idx: -1 };
+          let locMin = { val: Infinity, idx: -1 };
+          
+          for (let i = 0; i < res.flat.z.length; i++) {
+            const z = res.flat.z[i];
+            if (z !== null) {
+              if (z > locMax.val) locMax = { val: z, idx: i };
+              if (z < locMin.val) locMin = { val: z, idx: i };
             }
           }
 
-          const synergyDiff = tempMaxZ - mBinMax;
-          if (synergyDiff > bestSynergyDiff) {
-            bestSynergyDiff = synergyDiff;
-            bestCombo = [g1, g2, g3];
+          let foundSynergy = false;
+          let synergyType = "";
+          let compStr = "";
+
+          // 最大値(sII)のシナジー判定
+          const calcComp = (idx) => {
+            const px = res.flat.x[idx];
+            const py = res.flat.y[idx];
+            const c = py / 0.866025;
+            const b = px - 0.5 * c;
+            return { a: Math.max(0, 1.0 - b - c), b: Math.max(0, b), c: Math.max(0, c) };
+          };
+
+          const maxC = calcComp(locMax.idx);
+          if (maxC.a > EPSILON && maxC.b > EPSILON && maxC.c > EPSILON) {
+            foundSynergy = true; synergyType = "sII優位";
+            compStr = `A:${(maxC.a*100).toFixed(0)}% B:${(maxC.b*100).toFixed(0)}% C:${(maxC.c*100).toFixed(0)}%`;
+          }
+
+          const minC = calcComp(locMin.idx);
+          if (!foundSynergy && minC.a > EPSILON && minC.b > EPSILON && minC.c > EPSILON) {
+            foundSynergy = true; synergyType = "sI優位";
+            compStr = `A:${(minC.a*100).toFixed(0)}% B:${(minC.b*100).toFixed(0)}% C:${(minC.c*100).toFixed(0)}%`;
+          }
+
+          if (foundSynergy) {
+            searchResults.push({ temp: t, press: p, gases: targetGases, type: synergyType, comp: compStr });
+          }
+        }
+      }
+    } 
+    else {
+      // --- モード2: 指定した温度・圧力で、シナジーが出る3成分を探す ---
+      const N = available_gases.length;
+      for (let i = 0; i < N; i++) {
+        for (let j = i + 1; j < N; j++) {
+          for (let k = j + 1; k < N; k++) {
+            const g1 = available_gases[i], g2 = available_gases[j], g3 = available_gases[k];
+            const res = calculateTernaryEnergySurface(g1, g2, g3, s_press, s_temp, 12);
+            
+            let locMax = { val: -Infinity, idx: -1 };
+            let locMin = { val: Infinity, idx: -1 };
+            for (let p = 0; p < res.flat.z.length; p++) {
+              if (res.flat.z[p] !== null) {
+                if (res.flat.z[p] > locMax.val) locMax = { val: res.flat.z[p], idx: p };
+                if (res.flat.z[p] < locMin.val) locMin = { val: res.flat.z[p], idx: p };
+              }
+            }
+
+            const calcComp = (idx) => {
+              const px = res.flat.x[idx];
+              const py = res.flat.y[idx];
+              const c = py / 0.866025;
+              const b = px - 0.5 * c;
+              return { a: Math.max(0, 1.0 - b - c), b: Math.max(0, b), c: Math.max(0, c) };
+            };
+
+            let foundSynergy = false;
+            let synergyType = "";
+            let compStr = "";
+
+            const maxC = calcComp(locMax.idx);
+            if (maxC.a > EPSILON && maxC.b > EPSILON && maxC.c > EPSILON) {
+              foundSynergy = true; synergyType = "sII優位";
+              compStr = `${g1}:${(maxC.a*100).toFixed(0)}% ${g2}:${(maxC.b*100).toFixed(0)}% ${g3}:${(maxC.c*100).toFixed(0)}%`;
+            }
+
+            const minC = calcComp(locMin.idx);
+            if (!foundSynergy && minC.a > EPSILON && minC.b > EPSILON && minC.c > EPSILON) {
+              foundSynergy = true; synergyType = "sI優位";
+              compStr = `${g1}:${(minC.a*100).toFixed(0)}% ${g2}:${(minC.b*100).toFixed(0)}% ${g3}:${(minC.c*100).toFixed(0)}%`;
+            }
+
+            if (foundSynergy) {
+              searchResults.push({ temp: s_temp, press: s_press, gases: [g1, g2, g3], type: synergyType, comp: compStr });
+            }
           }
         }
       }
     }
 
     isSearching = false;
-
-    if (bestCombo && bestSynergyDiff > 0.001) {
-      gas_a = bestCombo[0];
-      gas_b = bestCombo[1];
-      gas_c = bestCombo[2];
-      draw(); 
-    } else {
-      alert(`現在の条件では、3成分すべてが必須となるような強いシナジー効果は見つかりませんでした。`);
-    }
   }
 
+  // 検索結果をクリックしてメイン画面に反映する関数
+  function applyResultToMain(result) {
+    gas_a = result.gases[0];
+    gas_b = result.gases[1];
+    gas_c = result.gases[2];
+    temp = result.temp;
+    press = result.press;
+    showSearchModal = false; // モーダルを閉じる
+    draw(); // メイン画面の再描画
+  }
+
+  // ==========================================
+  // ★ メイン描画ロジック
+  // ==========================================
   async function draw() {
     if (!Plotly) return;
 
@@ -132,10 +192,6 @@
       [1.0, '#FF8C00']  
     ];
 
-    // --- 0%判定のための微小値 (浮動小数点誤差対策) ---
-    const EPSILON = 0.001; // 0.1% より大きければ「含まれている」と判定
-
-    // --- 最大値 (sII優位) の計算とシナジー判定 ---
     if (maxIdx !== -1) {
       const px = res.flat.x[maxIdx];
       const py = res.flat.y[maxIdx];
@@ -147,7 +203,6 @@
       const compB = Math.max(0, b);
       const compC = Math.max(0, c);
       
-      // ★ 新定義：A, B, C 全てが0%ではない（3成分全てがブレンドされている）
       const hasSynergyMax = compA > EPSILON && compB > EPSILON && compC > EPSILON;
 
       analysisMax = { 
@@ -157,7 +212,6 @@
       };
     }
 
-    // --- 最小値 (sI優位) の計算とシナジー判定 ---
     if (minIdx !== -1) {
       const px = res.flat.x[minIdx];
       const py = res.flat.y[minIdx];
@@ -169,7 +223,6 @@
       const compB = Math.max(0, b);
       const compC = Math.max(0, c);
 
-      // ★ 新定義：A, B, C 全てが0%ではない（3成分全てがブレンドされている）
       const hasSynergyMin = compA > EPSILON && compB > EPSILON && compC > EPSILON;
 
       analysisMin = { 
@@ -251,7 +304,13 @@
 </script>
 
 <main>
-  <h1>3成分系ハイドレート探索AI ver.1.4.1</h1>
+  <h1>3成分系ハイドレート探索AI ver.2.0.0</h1>
+
+  <div class="action-row" style="margin-bottom: 25px;">
+    <button class="discover-btn" on:click={() => { showSearchModal = true; searchResults = []; }}>
+      🔍 高度なシナジー検索ツールを開く
+    </button>
+  </div>
 
   <div class="controls">
     <div class="row">
@@ -282,16 +341,6 @@
       </div>
     </div>
 
-    <div class="action-row">
-      <button class="discover-btn" on:click={discoverSynergy} disabled={isSearching}>
-        {#if isSearching}
-          🔍 全パターン総当たり計算中...
-        {:else}
-          ✨ 現在の条件で最強のシナジーを全探索する
-        {/if}
-      </button>
-    </div>
-
     <div class="info-box {analysisMax.hasSynergy ? 'synergy-max' : ''}">
       <div class="info-header">
         <h3 style="color: #FF8C00;">🔴 sII 構造の最大安定度 (Δμ 最大値)</h3>
@@ -304,7 +353,7 @@
         <span><b>Max Value:</b> {analysisMax.val.toFixed(4)} kJ/mol</span>
         <span style="margin-left: 15px; font-weight: bold; color: {analysisMax.hasSynergy ? '#d35400' : '#7f8c8d'};">
           {#if !analysisMax.hasSynergy}
-            (シナジーなし: 2成分で十分)
+            (シナジーなし: エッジ上の2成分で十分)
           {/if}
         </span>
       </div>
@@ -328,7 +377,7 @@
         <span><b>Min Value:</b> {analysisMin.val.toFixed(4)} kJ/mol</span>
         <span style="margin-left: 15px; font-weight: bold; color: {analysisMin.hasSynergy ? '#16a085' : '#7f8c8d'};">
           {#if !analysisMin.hasSynergy}
-            (シナジーなし: 2成分で十分)
+            (シナジーなし: エッジ上の2成分で十分)
           {/if}
         </span>
       </div>
@@ -347,6 +396,72 @@
     <p>Okayama University | Naito Hisatoshi</p>
   </footer>
 </main>
+
+{#if showSearchModal}
+  <div class="modal-overlay">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h2>🔍 高度なシナジー検索ツール</h2>
+        <button class="close-btn" on:click={() => showSearchModal = false}>✕</button>
+      </div>
+
+      <div class="search-mode-selector">
+        <label class={searchMode === 'gases' ? 'active-mode' : ''}>
+          <input type="radio" bind:group={searchMode} value="gases"> 3成分を固定して検索 (温度・圧力を走査)
+        </label>
+        <label class={searchMode === 'pt' ? 'active-mode' : ''}>
+          <input type="radio" bind:group={searchMode} value="pt"> 温度・圧力を固定して検索 (全ガスを走査)
+        </label>
+      </div>
+
+      <div class="search-inputs">
+        {#if searchMode === 'gases'}
+          <p class="search-desc">指定した3つのガスにおいて、シナジーが発現する温度(200~300K)・圧力(10~200bar)を探索します。</p>
+          <div class="row">
+            <select bind:value={s_gas_a}> {#each available_gases as g}<option>{g}</option>{/each} </select>
+            <select bind:value={s_gas_b}> {#each available_gases as g}<option>{g}</option>{/each} </select>
+            <select bind:value={s_gas_c}> {#each available_gases as g}<option>{g}</option>{/each} </select>
+          </div>
+        {:else}
+          <p class="search-desc">指定した温度・圧力において、2600通り以上の全ガス組み合わせの中からシナジーを発現するものを探索します。</p>
+          <div class="row" style="gap: 30px; justify-content: center;">
+            <label>温度 (K): <input type="number" bind:value={s_temp} style="width: 100px; padding: 5px;"></label>
+            <label>圧力 (bar): <input type="number" bind:value={s_press} style="width: 100px; padding: 5px;"></label>
+          </div>
+        {/if}
+      </div>
+
+      <button class="run-search-btn" on:click={runAdvancedSearch} disabled={isSearching}>
+        {isSearching ? '⏳ 膨大なパターンを総当たり計算中...' : '🚀 検索を実行する'}
+      </button>
+
+      <div class="search-results">
+        {#if isSearching}
+          <div class="loading-text">計算しています。数秒お待ちください...</div>
+        {:else if searchResults.length > 0}
+          <h4>🎯 発見されたシナジー条件 ({searchResults.length} 件)</h4>
+          <ul class="result-list">
+            {#each searchResults as res}
+              <li class="result-item">
+                <div class="res-info">
+                  <span class="res-badge {res.type === 'sII優位' ? 'badge-sII' : 'badge-sI'}">{res.type}</span>
+                  <b>T:</b> {res.temp} K, <b>P:</b> {res.press} bar<br>
+                  <b>組成:</b> <span style="color: #555;">{res.comp}</span>
+                </div>
+                <button class="apply-btn" on:click={() => applyResultToMain(res)}>メイン画面に反映 ➔</button>
+              </li>
+            {/each}
+          </ul>
+        {:else}
+          <div class="loading-text" style="color: #7f8c8d;">
+            (ここに検索結果が表示されます。条件によっては見つからない場合があります)
+          </div>
+        {/if}
+      </div>
+
+    </div>
+  </div>
+{/if}
 
 <style>
   main { max-width: 900px; margin: 0 auto; padding: 20px; font-family: 'Helvetica Neue', Arial, sans-serif; color: #333; }
@@ -372,14 +487,13 @@
   .number-input { width: 80px; padding: 6px; border: 1px solid #ccc; border-radius: 4px; text-align: right; font-size: 1rem; }
   input[type=range] { width: 100%; cursor: pointer; height: 6px; background: #ddd; border-radius: 5px; outline: none; -webkit-appearance: none; }
   
-  .action-row { display: flex; justify-content: center; margin-bottom: 20px; }
+  .action-row { display: flex; justify-content: center; }
   .discover-btn { 
     background: linear-gradient(135deg, #6c5ce7, #a29bfe); color: white; border: none; 
-    padding: 12px 25px; border-radius: 25px; font-size: 1.1rem; font-weight: bold; 
+    padding: 12px 30px; border-radius: 30px; font-size: 1.1rem; font-weight: bold; 
     cursor: pointer; box-shadow: 0 4px 10px rgba(108, 92, 231, 0.3); transition: transform 0.2s;
   }
-  .discover-btn:hover:not(:disabled) { transform: scale(1.05); }
-  .discover-btn:disabled { background: #bdc3c7; cursor: not-allowed; box-shadow: none; }
+  .discover-btn:hover { transform: scale(1.05); }
 
   .info-box { background: #f8f9fa; padding: 15px 20px; border-radius: 8px; border-left: 5px solid #bdc3c7; transition: all 0.3s ease; }
   .info-box h3 { margin: 0 0 10px 0; font-size: 1rem; letter-spacing: 0.5px; }
@@ -393,8 +507,57 @@
   .synergy-badge-min { background: #008080; color: white; padding: 4px 8px; border-radius: 4px; font-size: 0.8rem; font-weight: bold; }
   
   .inner-hr { border-top: 1px dashed #ccc; margin: 15px 0; }
-
   #myDiv { border-radius: 8px; overflow: hidden; border: 1px solid #eee; }
-
   footer { margin-top: 40px; text-align: right; color: #aaa; font-size: 0.9rem; border-top: 1px solid #eee; padding-top: 10px; }
+
+  /* ========================================== */
+  /* ★ モーダル用 CSS */
+  /* ========================================== */
+  .modal-overlay {
+    position: fixed; top: 0; left: 0; width: 100vw; height: 100vh;
+    background: rgba(0,0,0,0.6); display: flex; justify-content: center; align-items: center; z-index: 1000;
+  }
+  .modal-content {
+    background: white; padding: 30px; border-radius: 12px; width: 90%; max-width: 700px;
+    max-height: 90vh; display: flex; flex-direction: column; box-shadow: 0 10px 30px rgba(0,0,0,0.2);
+  }
+  .modal-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px; }
+  .modal-header h2 { margin: 0; font-size: 1.5rem; color: #2c3e50; }
+  .close-btn { background: none; border: none; font-size: 1.5rem; cursor: pointer; color: #7f8c8d; }
+  
+  .search-mode-selector { display: flex; flex-direction: column; gap: 10px; margin-bottom: 20px; background: #f8f9fa; padding: 15px; border-radius: 8px; border: 1px solid #eee; }
+  .search-mode-selector label { cursor: pointer; font-size: 1rem; color: #555; font-weight: normal; }
+  .active-mode { font-weight: bold !important; color: #6c5ce7 !important; }
+
+  .search-inputs { margin-bottom: 25px; }
+  .search-desc { font-size: 0.9rem; color: #7f8c8d; margin-bottom: 15px; }
+
+  .run-search-btn {
+    background: #0984e3; color: white; border: none; padding: 15px; border-radius: 8px;
+    font-size: 1.1rem; font-weight: bold; cursor: pointer; width: 100%; transition: background 0.2s;
+  }
+  .run-search-btn:hover:not(:disabled) { background: #074b83; }
+  .run-search-btn:disabled { background: #bdc3c7; cursor: not-allowed; }
+
+  .search-results {
+    margin-top: 25px; flex-grow: 1; overflow-y: auto; border-top: 1px solid #eee; padding-top: 15px;
+  }
+  .search-results h4 { margin: 0 0 15px 0; color: #2c3e50; }
+  .loading-text { text-align: center; margin-top: 20px; font-weight: bold; color: #e67e22; }
+  
+  .result-list { list-style: none; padding: 0; margin: 0; display: flex; flex-direction: column; gap: 10px; }
+  .result-item { 
+    background: #fdfdfd; border: 1px solid #e0e0e0; border-radius: 8px; padding: 12px 15px;
+    display: flex; justify-content: space-between; align-items: center; 
+  }
+  .res-info { font-size: 0.95rem; line-height: 1.5; }
+  .res-badge { padding: 2px 6px; border-radius: 4px; font-size: 0.75rem; font-weight: bold; color: white; margin-right: 8px; }
+  .badge-sII { background: #FF8C00; }
+  .badge-sI { background: #008080; }
+  
+  .apply-btn { 
+    background: #27ae60; color: white; border: none; padding: 8px 15px; border-radius: 6px;
+    cursor: pointer; font-weight: bold; font-size: 0.9rem; transition: transform 0.1s;
+  }
+  .apply-btn:hover { transform: scale(1.05); background: #219653; }
 </style>
