@@ -176,3 +176,48 @@ export function calculateTernaryEnergySurface(gas_a, gas_b, gas_c, pressure_bar,
         flat:   { x: x_flat,   y: y_flat,   z: z_flat }
     };
 }
+
+// === 7. 2成分系の安定度計算（シナジー効果判定用に追加） ===
+export function calculateStability(name1, name2, frac1, frac2, pressure_bar, temp_k) {
+    const P_Pa = pressure_bar * 100000;
+    const gas_names = [name1, name2];
+    const fracs = [frac1, frac2];
+
+    // C計算 (Langmuir定数)
+    const C_vals = {}; 
+    ["12", "14", "16"].forEach(cageID => {
+        C_vals[cageID] = {};
+        gas_names.forEach(name => {
+            const p = inter[name];
+            if (p) {
+                C_vals[cageID][name] = calculateLangmuir_LJD(
+                    temp_k, crystals.radii[cageID], crystals.z[cageID], p.sig, p.epsK
+                );
+            } else {
+                C_vals[cageID][name] = 0; // エラー回避
+            }
+        });
+    });
+
+    let mu_total = { "CS1": 0, "CS2": 0 };
+    
+    // Δμ の計算
+    for (let type of ["CS1", "CS2"]) {
+        const water_count = crystals.Nw[type];
+        let sum_term = 0;
+        for (let [cageID, count] of Object.entries(crystals.cage_counts[type])) {
+            let sigma_CP = 0;
+            gas_names.forEach((name, idx) => {
+                if (fracs[idx] > 0 && C_vals[cageID][name]) {
+                    sigma_CP += C_vals[cageID][name] * (P_Pa * fracs[idx]);
+                }
+            });
+            sum_term += (count / water_count) * Math.log(1.0 + sigma_CP);
+        }
+        const delta_mu = -R_gas * temp_k * sum_term; 
+        mu_total[type] = (crystals.mu_e[type] * 1000.0) + delta_mu; 
+    }
+
+    // [kJ/mol] で返す (sI - sII)
+    return (mu_total["CS1"] - mu_total["CS2"]) / 1000.0;
+}
