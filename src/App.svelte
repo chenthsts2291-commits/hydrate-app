@@ -271,7 +271,7 @@
 
     <div class="info-box {analysisMax.hasSynergy ? 'synergy-max' : ''}">
       <div class="info-header">
-        <h3 style="color: #FF8C00;">🔴 sII 構造の最大安定度 (Δμ 最大値)</h3>
+        <h3 style="color: #FF8C00;">🔴 Δμ(sI)-Δμ(sII) の最大値 </h3>
         {#if analysisMax.hasSynergy}
           <span class="synergy-badge-max">🌟 3成分シナジー</span>
         {/if}
