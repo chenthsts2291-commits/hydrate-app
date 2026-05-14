@@ -11,12 +11,15 @@
   let gas_b = "Ethane";
   let gas_c = "CF4";
 
-  let analysisInfo = { maxZ: 0, compA: 0, compB: 0, compC: 0, hasSynergy: false, synergyIncrease: 0 };
-  let isSearching = false; // 探索中かどうかのフラグ
+  // ★ 最大値用・最小値用の情報をそれぞれ格納する変数
+  let analysisMax = { val: 0, a: 0, b: 0, c: 0, hasSynergy: false, synergyDiff: 0 };
+  let analysisMin = { val: 0, a: 0, b: 0, c: 0 };
+  
+  let isSearching = false; // 全探索中かどうかのフラグ
 
   let Plotly;
 
-  // 2成分系の最大安定度を計算する補助関数
+  // 2成分系の最大安定度(sII方向の最大値)を計算する補助関数
   function getBinaryMax(name1, name2, P, T, steps = 100) {
     let maxBinary = -Infinity;
     for (let i = 0; i <= steps; i++) {
@@ -30,7 +33,7 @@
     return maxBinary;
   }
 
-  // ★ 追加機能：シナジー効果のあるガスの組み合わせを自動探索する関数
+  // ★ 全組み合わせを総当たりして最強のシナジーを探す関数
   async function discoverSynergy() {
     if (isSearching) return;
     isSearching = true;
@@ -38,52 +41,70 @@
     // UIを「探索中」にするために少し待つ
     await new Promise(resolve => setTimeout(resolve, 50));
 
-    let found = false;
-    let attempts = 0;
-    const maxAttempts = 150; // 最大150パターンの組み合わせを裏で試す
+    let bestSynergyDiff = -Infinity;
+    let bestCombo = null;
 
-    while (!found && attempts < maxAttempts) {
-      attempts++;
-      
-      // 3つのガスをランダムに選出
-      let g1 = available_gases[Math.floor(Math.random() * available_gases.length)];
-      let g2 = available_gases[Math.floor(Math.random() * available_gases.length)];
-      let g3 = available_gases[Math.floor(Math.random() * available_gases.length)];
-      
-      // 同じガスが被った場合はやり直し
-      if (g1 === g2 || g2 === g3 || g1 === g3) continue;
+    const N = available_gases.length;
 
-      // 高速化のため、粗いグリッド(n=15)で3成分系の最大値のアタリをつける
-      const res = calculateTernaryEnergySurface(g1, g2, g3, press, temp, 15);
-      let tempMaxZ = -Infinity;
-      for (let i = 0; i < res.flat.z.length; i++) {
-        if (res.flat.z[i] !== null && res.flat.z[i] > tempMaxZ) {
-          tempMaxZ = res.flat.z[i];
-        }
+    // 1. 高速化のため、すべての2成分ペアの最大値を事前計算（キャッシュ）
+    const binaryCache = {};
+    for(let i = 0; i < N; i++){
+      for(let j = i + 1; j < N; j++){
+        const g1 = available_gases[i];
+        const g2 = available_gases[j];
+        binaryCache[`${g1}-${g2}`] = getBinaryMax(g1, g2, press, temp, 20); // 粗く(n=20)計算
       }
+    }
 
-      // 2成分系の最大値を荒く(n=20)計算
-      const mAB = getBinaryMax(g1, g2, press, temp, 20);
-      const mBC = getBinaryMax(g2, g3, press, temp, 20);
-      const mCA = getBinaryMax(g3, g1, press, temp, 20);
-      const mBin = Math.max(mAB, mBC, mCA);
+    const getBin = (g1, g2) => {
+      if(g1 > g2) [g1, g2] = [g2, g1];
+      return binaryCache[`${g1}-${g2}`];
+    };
 
-      // シナジー効果（2成分の最大値より、3成分の最大値が明確に大きい）を発見したら確定
-      if (tempMaxZ > mBin + 0.05) {
-        gas_a = g1;
-        gas_b = g2;
-        gas_c = g3;
-        found = true;
-        break;
+    // 2. 数千通りの組み合わせを全探索
+    for(let i = 0; i < N; i++){
+      for(let j = i + 1; j < N; j++){
+        for(let k = j + 1; k < N; k++){
+          const g1 = available_gases[i];
+          const g2 = available_gases[j];
+          const g3 = available_gases[k];
+
+          // 構成する2成分系のうち、最大の安定度
+          const mAB = getBin(g1, g2);
+          const mBC = getBin(g2, g3);
+          const mCA = getBin(g1, g3);
+          const mBinMax = Math.max(mAB, mBC, mCA);
+
+          // 3成分系の最大値のアタリをつける (粗く n=12 で計算)
+          const res = calculateTernaryEnergySurface(g1, g2, g3, press, temp, 12);
+          let tempMaxZ = -Infinity;
+          for (let p = 0; p < res.flat.z.length; p++) {
+            if (res.flat.z[p] !== null && res.flat.z[p] > tempMaxZ) {
+              tempMaxZ = res.flat.z[p];
+            }
+          }
+
+          // ★ 絶対値を使わず、単純な差分(kJ/mol)でプラス方向への伸びを評価
+          const synergyDiff = tempMaxZ - mBinMax;
+          
+          if (synergyDiff > bestSynergyDiff) {
+            bestSynergyDiff = synergyDiff;
+            bestCombo = [g1, g2, g3];
+          }
+        }
       }
     }
 
     isSearching = false;
 
-    if (found) {
+    // 有意なシナジー(0.001 kJ/mol以上の伸び)があれば描画
+    if (bestCombo && bestSynergyDiff > 0.001) {
+      gas_a = bestCombo[0];
+      gas_b = bestCombo[1];
+      gas_c = bestCombo[2];
       draw(); // 発見された組み合わせで精密(n=60)に再描画
     } else {
-      alert(`現在の条件(T=${temp}K, P=${press}bar)では、${maxAttempts}通り探索しましたが強いシナジーは見つかりませんでした。温度や圧力を変えて再度お試しください。`);
+      alert(`現在の条件(T=${temp}K, P=${press}bar)では、全パターンの組み合わせを計算しましたが、2成分系を上回るシナジー効果は見つかりませんでした。`);
     }
   }
 
@@ -95,6 +116,7 @@
     let maxZ = -Infinity;
     let minZ = Infinity;
     let maxIdx = -1;
+    let minIdx = -1;
     
     for (let i = 0; i < res.flat.z.length; i++) {
       const z = res.flat.z[i];
@@ -105,6 +127,7 @@
         }
         if (z < minZ) {
           minZ = z;
+          minIdx = i;
         }
       }
     }
@@ -114,8 +137,9 @@
     const maxCA = getBinaryMax(gas_c, gas_a, press, temp);
     const maxBinary = Math.max(maxAB, maxBC, maxCA);
     
-    const hasSynergy = maxZ > maxBinary + 0.001;
-    const synergyIncrease = hasSynergy ? ((maxZ - maxBinary) / Math.abs(maxBinary) * 100) : 0;
+    // ★ 差分(kJ/mol)だけでシナジーを評価
+    const synergyDiff = maxZ - maxBinary;
+    const hasSynergy = synergyDiff > 0.001;
 
     const maxAbs = Math.max(Math.abs(maxZ), Math.abs(minZ), 0.1); 
 
@@ -126,6 +150,7 @@
       [1.0, '#FF8C00']  
     ];
 
+    // --- 最大値 (sII優位) のモル分率計算 ---
     if (maxIdx !== -1) {
       const px = res.flat.x[maxIdx];
       const py = res.flat.y[maxIdx];
@@ -133,13 +158,25 @@
       const b = px - 0.5 * c;
       const a = 1.0 - b - c;
 
-      analysisInfo = { 
-        maxZ: maxZ, 
-        compA: Math.max(0, a), 
-        compB: Math.max(0, b), 
-        compC: Math.max(0, c),
+      analysisMax = { 
+        val: maxZ, 
+        a: Math.max(0, a), b: Math.max(0, b), c: Math.max(0, c),
         hasSynergy: hasSynergy,
-        synergyIncrease: synergyIncrease
+        synergyDiff: synergyDiff
+      };
+    }
+
+    // --- 最小値 (sI優位) のモル分率計算 ---
+    if (minIdx !== -1) {
+      const px = res.flat.x[minIdx];
+      const py = res.flat.y[minIdx];
+      const c = py / 0.866025;
+      const b = px - 0.5 * c;
+      const a = 1.0 - b - c;
+
+      analysisMin = { 
+        val: minZ, 
+        a: Math.max(0, a), b: Math.max(0, b), c: Math.max(0, c)
       };
     }
 
@@ -190,7 +227,6 @@
       uirevision: 'true', 
       scene: {
         aspectratio: {x: 1, y: 0.866, z: 0.6},
-        // ★ 修正：Z軸の数値のすぐ横にラベルを配置（改行を入れてスッキリと）
         zaxis: { 
           title: { text: '<b>ΔμsI - ΔμsII<br>[kJ/mol]</b>', font: {size: 13, color: '#333'} } 
         },
@@ -216,7 +252,7 @@
 </script>
 
 <main>
-  <h1>3成分系ハイドレート探索AI ver.1.3.0</h1>
+  <h1>3成分系ハイドレート探索AI ver.1.4.0</h1>
 
   <div class="controls">
     <div class="row">
@@ -250,23 +286,23 @@
     <div class="action-row">
       <button class="discover-btn" on:click={discoverSynergy} disabled={isSearching}>
         {#if isSearching}
-          🔍 探索中...（数十パターンを計算中）
+          🔍 全パターン総当たり計算中...
         {:else}
-          ✨ 今の条件でシナジーのある組み合わせを探す
+          ✨ 現在の条件で最強のシナジーを全探索する
         {/if}
       </button>
     </div>
 
-    <div class="info-box {analysisInfo.hasSynergy ? 'synergy-border' : ''}">
+    <div class="info-box {analysisMax.hasSynergy ? 'synergy-border' : ''}">
       <div class="info-header">
-        <h3>Δμ(sI) - Δμ(sII) の最大値</h3>
+        <h3 style="color: #FF8C00;">🔴 sII 構造の最大安定度 (Δμ 最大値)</h3>
       </div>
       
       <div class="info-row">
-        <span><b>Max Value:</b> {analysisInfo.maxZ.toFixed(4)} kJ/mol</span>
-        <span style="margin-left: 15px; font-weight: bold; color: {analysisInfo.hasSynergy ? '#d35400' : '#7f8c8d'};">
-          {#if analysisInfo.hasSynergy}
-            (シナジーあり: 2成分より +{analysisInfo.synergyIncrease.toFixed(1)}% 安定化)
+        <span><b>Max Value:</b> {analysisMax.val.toFixed(4)} kJ/mol</span>
+        <span style="margin-left: 15px; font-weight: bold; color: {analysisMax.hasSynergy ? '#d35400' : '#7f8c8d'};">
+          {#if analysisMax.hasSynergy}
+            (シナジーあり: 2成分より +{analysisMax.synergyDiff.toFixed(3)} kJ/mol 安定化)
           {:else}
             (シナジーなし: 2成分系のブレンドで十分)
           {/if}
@@ -274,9 +310,25 @@
       </div>
       
       <div class="info-composition centered">
-        <span style="color: #d63031;">A: {(analysisInfo.compA * 100).toFixed(1)}%</span>
-        <span style="color: #0984e3;">B: {(analysisInfo.compB * 100).toFixed(1)}%</span>
-        <span style="color: #00b894;">C: {(analysisInfo.compC * 100).toFixed(1)}%</span>
+        <span style="color: #d63031;">A: {(analysisMax.a * 100).toFixed(1)}%</span>
+        <span style="color: #0984e3;">B: {(analysisMax.b * 100).toFixed(1)}%</span>
+        <span style="color: #00b894;">C: {(analysisMax.c * 100).toFixed(1)}%</span>
+      </div>
+
+      <hr class="inner-hr">
+
+      <div class="info-header">
+        <h3 style="color: #008080;">🔵 sI 構造の最大安定度 (Δμ 最小値)</h3>
+      </div>
+      
+      <div class="info-row">
+        <span><b>Min Value:</b> {analysisMin.val.toFixed(4)} kJ/mol</span>
+      </div>
+      
+      <div class="info-composition centered">
+        <span style="color: #d63031;">A: {(analysisMin.a * 100).toFixed(1)}%</span>
+        <span style="color: #0984e3;">B: {(analysisMin.b * 100).toFixed(1)}%</span>
+        <span style="color: #00b894;">C: {(analysisMin.c * 100).toFixed(1)}%</span>
       </div>
     </div>
   </div>
@@ -312,7 +364,6 @@
   .number-input { width: 80px; padding: 6px; border: 1px solid #ccc; border-radius: 4px; text-align: right; font-size: 1rem; }
   input[type=range] { width: 100%; cursor: pointer; height: 6px; background: #ddd; border-radius: 5px; outline: none; -webkit-appearance: none; }
   
-  /* ★ 探索ボタンのスタイル */
   .action-row { display: flex; justify-content: center; margin-bottom: 20px; }
   .discover-btn { 
     background: linear-gradient(135deg, #6c5ce7, #a29bfe); color: white; border: none; 
@@ -323,12 +374,13 @@
   .discover-btn:disabled { background: #bdc3c7; cursor: not-allowed; box-shadow: none; }
 
   .info-box { background: #f8f9fa; padding: 15px 20px; border-radius: 8px; border-left: 5px solid #6c5ce7; transition: all 0.3s ease; }
-  .info-box h3 { margin: 0 0 10px 0; font-size: 1rem; color: #555; letter-spacing: 0.5px; }
+  .info-box h3 { margin: 0 0 10px 0; font-size: 1rem; letter-spacing: 0.5px; }
   .info-composition { display: flex; gap: 20px; margin-top: 5px; font-weight: bold; font-size: 1.1rem; }
   
   .centered { justify-content: center; margin-top: 10px; }
   .synergy-border { border-left: 5px solid #e67e22; background: #fffcf5; }
   .info-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 5px; }
+  .inner-hr { border-top: 1px dashed #ccc; margin: 15px 0; }
 
   #myDiv { border-radius: 8px; overflow: hidden; border: 1px solid #eee; }
 
